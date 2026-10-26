@@ -15,7 +15,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 <header class="top">
@@ -24,14 +24,19 @@
     <form class="search" id="searchForm" role="search">
       <input id="q" type="search" placeholder="Search anime" autocomplete="off" aria-label="Search anime">
     </form>
+    <button id="bellBtn" class="icon-btn bell" aria-label="New episodes">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-1.7 1.7A1 1 0 0 0 4 19.4h16a1 1 0 0 0 .7-1.7Z"/></svg>
+      <span id="bellCount" class="bell-count" hidden></span>
+    </button>
   </div>
+  <div id="notesPanel" class="notes-panel" hidden style="display:none"></div>
 </header>
 
 <main id="app" class="wrap"></main>
 
 <nav class="tabbar" aria-label="Sections">
   <a href="#/" data-tab="home">Home</a>
-  <a href="#/list" data-tab="list">My list</a>
+  <a href="#/list" data-tab="list">Watching</a>
   <a href="#/addons" data-tab="addons">Add-ons</a>
 </nav>
 
@@ -46,6 +51,6 @@
 <div id="toast" class="toast" hidden style="display:none"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

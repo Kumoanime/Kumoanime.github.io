@@ -116,3 +116,16 @@ h1,h2,h3{font-weight:400;margin:0}
 
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--tabbar) + 12px);z-index:30;background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;font-size:14px;font-weight:500;max-width:90vw}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+.bell{position:relative;background:var(--surface);color:var(--ink);border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+.bell-count{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--accent);color:var(--accent-ink);font-family:var(--mono);font-size:10px;line-height:18px;text-align:center}
+.notes-panel{position:absolute;top:calc(100% + 6px);right:max(12px,env(safe-area-inset-right,0px));width:min(360px,calc(100vw - 24px));max-height:70vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 32px rgb(0 0 0/.5);padding:6px}
+.notes-head{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:10px 10px 6px}
+.note-row{display:flex;gap:10px;align-items:center;padding:8px 10px;border-radius:10px;text-decoration:none}
+.note-row:hover{background:var(--raise)}
+.note-row img{width:36px;aspect-ratio:2/3;object-fit:cover;border-radius:6px;flex:none;background:var(--raise)}
+.note-row div{min-width:0}
+.note-row b{display:block;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.note-row span{font-size:12px;color:var(--muted)}
+.note-row.fresh b::after{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-left:6px;vertical-align:middle}
+.notes-empty{margin:0;padding:8px 10px 12px;font-size:13px;color:var(--muted)}

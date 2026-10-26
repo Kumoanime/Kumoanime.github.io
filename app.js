@@ -214,7 +214,7 @@ async function viewAnime(id, epParam) {
     <p class="desc">${esc(stripHtml(m.description)).replace(/\n/g, "<br>")}</p>
     <div class="actions">
       <button class="btn" id="playNext">▶ ${isMovie ? "Play" : "Play episode " + nextEpisode(route, count)}</button>
-      <button class="btn ghost" id="toggleList">${inList ? "✓ In my list" : "+ My list"}</button>
+      <button class="btn ghost" id="toggleList">${inList ? "✓ Watching" : "+ Watching"}</button>
     </div>
     ${isMovie ? "" : section("Episodes", `<div class="eps">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
       const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
@@ -273,7 +273,7 @@ async function viewMeta(key, type, id) {
       <div class="hero-body"><div class="cover">${m.poster ? `<img src="${esc(m.poster)}" alt="">` : ""}</div>
         <div><h1>${esc(m.name)}</h1><div class="facts">${[m.releaseInfo, (m.genres || []).slice(0, 3).join(", "), a.manifest.name].filter(Boolean).map(esc).join(" · ")}</div></div></div></div>
     ${m.description ? `<p class="desc">${esc(m.description)}</p>` : ""}
-    <div class="actions">${videos.length ? "" : `<button class="btn" id="playMain">▶ Play</button>`}<button class="btn ghost" id="toggleList">${inList ? "✓ In my list" : "+ My list"}</button></div>
+    <div class="actions">${videos.length ? "" : `<button class="btn" id="playMain">▶ Play</button>`}<button class="btn ghost" id="toggleList">${inList ? "✓ Watching" : "+ Watching"}</button></div>
     ${videos.length ? section("Episodes", `<div class="vlist">${videos.map(v => `<button class="vrow" data-vid="${esc(v.id)}">${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" loading="lazy">` : ""}<div><b>${esc(v.title || v.name || "Episode " + v.episode)}</b><span>${[v.season != null ? "S" + v.season : "", v.episode != null ? "E" + v.episode : ""].join(" ")}</span></div></button>`).join("")}</div>`) : ""}
     <div id="streams"></div>`;
   const ctx = { route, title: m.name, poster: m.poster };
@@ -303,18 +303,19 @@ function renderStreams(box, results, info) {
 }
 
 function toggleWatch(route, title, poster) {
-  if (watchlist[route]) { delete watchlist[route]; toast("Removed from My list"); }
-  else { watchlist[route] = { route, title, poster, added: Date.now() }; toast("Added to My list"); }
+  if (watchlist[route]) { delete watchlist[route]; toast("Removed from Watching"); }
+  else { watchlist[route] = { route, title, poster, added: Date.now() }; toast("Added to Watching"); }
   store.set("watchlist", watchlist);
+  loadNotes();
 }
 
 function viewList() {
   const items = Object.values(watchlist).sort((a, b) => b.added - a.added);
   const cont = continueItems();
   app.innerHTML =
-    section("My list", items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "")).join("")}</div>` : `<div class="empty"><h3>Nothing saved yet</h3>Tap <b>+ My list</b> on any show to keep it here.</div>`) +
+    section("Watching", items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "")).join("")}</div>` : `<div class="empty"><h3>You're not watching anything yet</h3>Tap <b>+ Watching</b> on any show to keep it here and get told when new episodes come out.</div>`) +
     (cont.length ? section("Recently watched", `<div class="grid">${cont.map(p => card(p.route, p.title, p.poster, p.label)).join("")}</div>`) : "") +
-    `<p class="note">Your list and progress are saved on this device.</p>`;
+    `<p class="note">Your shows and progress are saved on this device.</p>`;
 }
 
 function viewAddons() {
@@ -398,6 +399,54 @@ function closePlayer() {
 }
 $("#playerClose").onclick = closePlayer;
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#player").hidden) closePlayer(); });
+
+// ---------- new-episode notifications ----------
+// Built from the Watching list each time the app opens: episodes aired in the last
+// 14 days, plus each show's next episode. "Seen" is the time the bell was last opened.
+let notes = { aired: [], upcoming: [] }, notesSeen = store.get("notesSeen", 0);
+async function loadNotes() {
+  const ids = Object.keys(watchlist).map(r => (r.match(/^#\/a\/(\d+)$/) || [])[1]).filter(Boolean).map(Number);
+  if (!ids.length) { notes = { aired: [], upcoming: [] }; return renderBell(); }
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    const d = await anilist(`query($ids:[Int],$from:Int,$to:Int){
+      aired:Page(perPage:50){airingSchedules(mediaId_in:$ids,airingAt_greater:$from,airingAt_lesser:$to,sort:TIME_DESC){episode airingAt media{id title{romaji english} coverImage{large}}}}
+      next:Page(perPage:50){media(id_in:$ids){id title{romaji english} coverImage{large} nextAiringEpisode{episode airingAt}}}}`, { ids, from: now - 14 * 86400, to: now });
+    notes = {
+      aired: d.aired.airingSchedules,
+      upcoming: d.next.media.filter(m => m.nextAiringEpisode).sort((a, b) => a.nextAiringEpisode.airingAt - b.nextAiringEpisode.airingAt),
+    };
+  } catch { notes.error = true; }
+  renderBell();
+}
+function ago(t) {
+  const m = Math.round((Date.now() / 1000 - t) / 60);
+  return m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+}
+function renderBell() {
+  const unread = notes.aired.filter(n => n.airingAt * 1000 > notesSeen).length;
+  const b = $("#bellCount"); b.textContent = unread > 9 ? "9+" : unread; b.hidden = !unread;
+  $("#bellBtn").setAttribute("aria-label", unread ? `${unread} new episode${unread > 1 ? "s" : ""}` : "New episodes");
+  const panel = $("#notesPanel"); if (panel.hidden) return;
+  const row = (m, ep, when, fresh) => `<a class="note-row${fresh ? " fresh" : ""}" href="#/a/${m.id}/${ep}"><img src="${esc(m.coverImage?.large)}" alt=""><div><b>${esc(titleOf(m))}</b><span>Episode ${ep} · ${when}</span></div></a>`;
+  panel.innerHTML = `<div class="notes-head">New episodes</div>` +
+    (Object.keys(watchlist).length === 0 ? `<p class="notes-empty">Add shows to <b>Watching</b> and new episodes will show up here.</p>`
+      : notes.error ? `<p class="notes-empty">Couldn't check for new episodes. Try again in a bit.</p>`
+      : (notes.aired.length ? notes.aired.map(n => row(n.media, n.episode, ago(n.airingAt), n.airingAt * 1000 > notesSeen)).join("") : `<p class="notes-empty">No new episodes in the last two weeks.</p>`) +
+        (notes.upcoming.length ? `<div class="notes-head">Coming up</div>` + notes.upcoming.map(m => row(m, m.nextAiringEpisode.episode, new Date(m.nextAiringEpisode.airingAt * 1000).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }), false)).join("") : ""));
+}
+function toggleNotes(open) {
+  const panel = $("#notesPanel");
+  panel.hidden = open === undefined ? !panel.hidden : !open;
+  panel.style.display = panel.hidden ? "none" : "";
+  if (!panel.hidden) { renderBell(); notesSeen = Date.now(); store.set("notesSeen", notesSeen); setTimeout(() => { $("#bellCount").hidden = true; }, 600); }
+}
+$("#bellBtn").onclick = e => { e.stopPropagation(); toggleNotes(); };
+document.addEventListener("click", e => { if (!e.target.closest("#notesPanel, #bellBtn")) toggleNotes(false); });
+window.addEventListener("hashchange", () => toggleNotes(false));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadNotes(); });
+setInterval(loadNotes, 15 * 60 * 1000);
+loadNotes();
 
 // ---------- routing ----------
 function route() {
