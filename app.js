@@ -567,7 +567,7 @@ renderAccount();
 function route() {
   const h = location.hash.replace(/^#\/?/, "");
   const [p, ...rest] = h.split("/");
-  document.querySelectorAll(".tabbar a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === ({ "": "home", list: "list", addons: "addons" }[p] || "") ? "page" : "false"));
+  document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === ({ "": "home", list: "list", addons: "addons" }[p] || "") ? "page" : "false"));
   window.scrollTo(0, 0);
   if (!p) return viewHome();
   if (p === "search") return viewSearch(decodeURIComponent(rest.join("/")));
@@ -577,6 +577,14 @@ function route() {
   if (p === "addons") return viewAddons();
   viewHome();
 }
-$("#searchForm").onsubmit = e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) location.hash = "#/search/" + encodeURIComponent(q); };
+function toggleSearch(open) {
+  const shown = togglePanel("#searchForm", open);
+  $("#searchBtn").setAttribute("aria-expanded", shown);
+  if (shown) $("#q").focus();
+}
+$("#searchBtn").onclick = e => { e.stopPropagation(); toggleSearch(); };
+document.addEventListener("click", e => { if (!e.target.closest("#searchForm, #searchBtn")) toggleSearch(false); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") toggleSearch(false); });
+$("#searchForm").onsubmit = e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) { toggleSearch(false); $("#q").blur(); location.hash = "#/search/" + encodeURIComponent(q); } };
 window.addEventListener("hashchange", route);
 route();
