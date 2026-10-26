@@ -15,7 +15,7 @@
 <link rel="apple-touch-icon" href="icon-180.png?v=4">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="style.css?v=13">
+<link rel="stylesheet" href="style.css?v=14">
 </head>
 <body>
 <header class="top">
@@ -34,9 +34,9 @@
 <main id="app" class="wrap"></main>
 
 <nav class="dock" aria-label="Sections">
-  <button id="searchBtn" class="dock-item" aria-label="Search" aria-expanded="false" data-tip="Search">
+  <a href="#/search" class="dock-item" data-tab="search" aria-label="Search" data-tip="Search">
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Zm5.4-2.1L21 21"/></svg>
-  </button>
+  </a>
   <a href="#/" class="dock-item" data-tab="home" aria-label="Home" data-tip="Home">
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M11.3 2.7a1 1 0 0 1 1.4 0l8.6 8.1c.6.6.2 1.7-.7 1.7H19v7.5a1 1 0 0 1-1 1h-3.5v-5.5h-5V21H6a1 1 0 0 1-1-1v-7.5H3.4c-.9 0-1.3-1.1-.7-1.7l8.6-8.1Z"/></svg>
   </a>
@@ -47,9 +47,6 @@
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M9 3a2.5 2.5 0 0 1 5 0v1h4a1 1 0 0 1 1 1v4h1a2.5 2.5 0 0 1 0 5h-1v5a1 1 0 0 1-1 1h-4.5v-1a2 2 0 0 0-4 0v1H5a1 1 0 0 1-1-1v-4.5h1a2 2 0 0 0 0-4H4V5a1 1 0 0 1 1-1h4V3Z"/></svg>
   </a>
 </nav>
-<form class="search-pop" id="searchForm" role="search" hidden style="display:none">
-  <input id="q" type="search" placeholder="Search anime" autocomplete="off" aria-label="Search anime" enterkeyhint="search">
-</form>
 
 <div id="player" class="player" hidden style="display:none">
   <div class="player-top">
@@ -63,6 +60,6 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>

@@ -179,13 +179,80 @@ async function viewHome() {
   });
 }
 
-async function viewSearch(q) {
-  $("#q").value = q;
-  app.innerHTML = section(`Results for “${q}”`, `<div class="grid">${Array(8).fill(`<div class="card"><div class="cover skel"></div></div>`).join("")}</div>`);
+// ---------- search + filter ----------
+// One page: search bar on top, filter dropdowns under it, results below. Filters are
+// kept in memory so going into a show and back keeps them.
+const GENRES = ["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"];
+const FILTERS = {
+  genre: ["Genre", GENRES.map(g => [g, g])],
+  season: ["Season", [["WINTER", "Winter"], ["SPRING", "Spring"], ["SUMMER", "Summer"], ["FALL", "Fall"]]],
+  year: ["Year", Array.from({ length: new Date().getFullYear() + 2 - 1970 }, (_, i) => { const y = new Date().getFullYear() + 1 - i; return [String(y), String(y)]; })],
+  format: ["Type", [["TV", "TV"], ["MOVIE", "Movie"], ["OVA", "OVA"], ["ONA", "ONA"], ["SPECIAL", "Special"], ["TV_SHORT", "TV short"]]],
+  status: ["Status", [["RELEASING", "Airing"], ["FINISHED", "Finished"], ["NOT_YET_RELEASED", "Not yet aired"], ["HIATUS", "On hiatus"]]],
+  country: ["Country", [["JP", "Japan"], ["CN", "China"], ["KR", "South Korea"], ["TW", "Taiwan"]]],
+  rating: ["Rating", [["90", "★ 9+"], ["80", "★ 8+"], ["70", "★ 7+"], ["60", "★ 6+"], ["50", "★ 5+"]]],
+  source: ["Source", [["MANGA", "Manga"], ["LIGHT_NOVEL", "Light novel"], ["WEB_NOVEL", "Web novel"], ["NOVEL", "Novel"], ["ORIGINAL", "Original"], ["VIDEO_GAME", "Video game"], ["VISUAL_NOVEL", "Visual novel"]]],
+  episodes: ["Episodes", [["1-12", "1–12"], ["13-26", "13–26"], ["27-60", "27–60"], ["61-", "61+"]]],
+  sort: ["Sort: popular", [["TRENDING_DESC", "Sort: trending"], ["SCORE_DESC", "Sort: top rated"], ["START_DATE_DESC", "Sort: newest"], ["TITLE_ROMAJI", "Sort: A–Z"]]],
+  exclude: ["Show everything", [["watching", "Hide my Watching"]]],
+};
+let filters = { q: "" }, searchPage = 1, searchItems = [], searchMore = false;
+
+function filterVars() {
+  const v = { page: searchPage };
+  if (filters.q) v.search = filters.q;
+  if (filters.genre) v.genre = [filters.genre];
+  if (filters.season) v.season = filters.season;
+  if (filters.year) v.year = +filters.year;
+  if (filters.format) v.format = [filters.format];
+  if (filters.status) v.status = filters.status;
+  if (filters.country) v.country = filters.country;
+  if (filters.rating) v.score = +filters.rating - 1;
+  if (filters.source) v.source = filters.source;
+  if (filters.episodes) { const [a, b] = filters.episodes.split("-"); v.epsMin = +a - 1; if (b) v.epsMax = +b + 1; }
+  if (filters.exclude === "watching") { const ids = Object.keys(watchlist).map(r => +(r.match(/^#\/a\/(\d+)$/) || [])[1]).filter(Boolean); if (ids.length) v.notIn = ids; }
+  v.sort = [filters.sort || (filters.q ? "SEARCH_MATCH" : "POPULARITY_DESC")];
+  return v;
+}
+async function runSearch(append) {
+  const box = $("#results"); if (!box) return;
+  if (!append) { searchPage = 1; searchItems = []; box.innerHTML = `<div class="grid">${Array(8).fill(`<div class="card"><div class="cover skel"></div></div>`).join("")}</div>`; }
   try {
-    const list = await anilistList("search:" + q, { search: q, sort: ["SEARCH_MATCH"] });
-    app.innerHTML = section(`Results for “${q}”`, list.length ? `<div class="grid">${list.map(aniCard).join("")}</div>` : `<div class="empty"><h3>Nothing found</h3>Try the show's Japanese or English title.</div>`);
-  } catch { app.innerHTML = `<div class="empty"><h3>Search isn't working</h3>Couldn't reach AniList. Check your connection and try again.</div>`; }
+    const d = await anilist(`query($page:Int,$search:String,$genre:[String],$season:MediaSeason,$year:Int,$format:[MediaFormat],$status:MediaStatus,$country:CountryCode,$score:Int,$source:MediaSource,$epsMin:Int,$epsMax:Int,$notIn:[Int],$sort:[MediaSort]){
+      Page(page:$page,perPage:30){pageInfo{hasNextPage}media(type:ANIME,isAdult:false,search:$search,genre_in:$genre,season:$season,seasonYear:$year,format_in:$format,status:$status,countryOfOrigin:$country,averageScore_greater:$score,source:$source,episodes_greater:$epsMin,episodes_lesser:$epsMax,id_not_in:$notIn,sort:$sort){${MEDIA_FIELDS}}}}`, filterVars());
+    searchItems = searchItems.concat(d.Page.media);
+    searchMore = d.Page.pageInfo.hasNextPage;
+    box.innerHTML = searchItems.length
+      ? `<div class="grid">${searchItems.map(aniCard).join("")}</div>${searchMore ? `<div class="more"><button class="btn ghost" id="loadMore">Load more</button></div>` : ""}`
+      : `<div class="empty"><h3>Nothing matches</h3>Try fewer filters, or the show's Japanese or English title.</div>`;
+    if ($("#loadMore")) $("#loadMore").onclick = e => { e.target.disabled = true; searchPage++; runSearch(true); };
+  } catch { box.innerHTML = `<div class="empty"><h3>Search isn't working</h3>Couldn't reach AniList. Check your connection and try again.</div>`; }
+}
+function viewSearch(focus) {
+  const active = Object.keys(FILTERS).filter(k => filters[k]).length;
+  app.innerHTML = `
+    <h1 class="page-title">Search</h1>
+    <form id="filterForm" class="filter-form">
+      <input id="q" type="search" class="filter-search" placeholder="Search anime" autocomplete="off" aria-label="Search anime" enterkeyhint="search" value="${esc(filters.q)}">
+      <div class="filter-grid">${Object.entries(FILTERS).map(([k, [label, opts]]) => `
+        <select id="f-${k}" data-f="${k}" aria-label="${esc(label)}" class="${filters[k] ? "set" : ""}">
+          <option value="">${esc(label)}</option>${opts.map(([v, t]) => `<option value="${esc(v)}"${filters[k] === v ? " selected" : ""}>${esc(t)}</option>`).join("")}
+        </select>`).join("")}</div>
+      <div class="filter-actions"><button class="btn" type="submit">Filter</button>${active ? `<button class="btn ghost" type="button" id="clearFilters">Clear ${active} filter${active > 1 ? "s" : ""}</button>` : ""}</div>
+    </form>
+    <div id="results"></div>`;
+  const form = $("#filterForm");
+  form.onsubmit = e => {
+    e.preventDefault();
+    filters.q = $("#q").value.trim();
+    form.querySelectorAll("[data-f]").forEach(sel => filters[sel.dataset.f] = sel.value);
+    $("#q").blur();
+    viewSearch();
+  };
+  form.querySelectorAll("[data-f]").forEach(sel => sel.onchange = () => sel.classList.toggle("set", !!sel.value));
+  if ($("#clearFilters")) $("#clearFilters").onclick = () => { filters = { q: filters.q }; viewSearch(); };
+  if (focus) $("#q").focus();
+  runSearch();
 }
 
 const mediaCache = {};
@@ -564,24 +631,15 @@ renderAccount();
 function route() {
   const h = location.hash.replace(/^#\/?/, "");
   const [p, ...rest] = h.split("/");
-  document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === ({ "": "home", list: "list", addons: "addons" }[p] || "") ? "page" : "false"));
+  document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === ({ "": "home", search: "search", list: "list", addons: "addons" }[p] || "") ? "page" : "false"));
   window.scrollTo(0, 0);
   if (!p) return viewHome();
-  if (p === "search") return viewSearch(decodeURIComponent(rest.join("/")));
+  if (p === "search") { if (rest[0]) filters.q = decodeURIComponent(rest.join("/")); return viewSearch(!rest[0] && !filters.q); }
   if (p === "a") return viewAnime(rest[0], rest[1]);
   if (p === "m") return viewMeta(decodeURIComponent(rest[0]), decodeURIComponent(rest[1]), decodeURIComponent(rest.slice(2).join("/")));
   if (p === "list") return viewList();
   if (p === "addons") return viewAddons();
   viewHome();
 }
-function toggleSearch(open) {
-  const shown = togglePanel("#searchForm", open);
-  $("#searchBtn").setAttribute("aria-expanded", shown);
-  if (shown) $("#q").focus();
-}
-$("#searchBtn").onclick = e => { e.stopPropagation(); toggleSearch(); };
-document.addEventListener("click", e => { if (!e.target.closest("#searchForm, #searchBtn")) toggleSearch(false); });
-document.addEventListener("keydown", e => { if (e.key === "Escape") toggleSearch(false); });
-$("#searchForm").onsubmit = e => { e.preventDefault(); const q = $("#q").value.trim(); if (q) { toggleSearch(false); $("#q").blur(); location.hash = "#/search/" + encodeURIComponent(q); } };
 window.addEventListener("hashchange", route);
 route();

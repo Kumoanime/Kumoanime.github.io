@@ -124,8 +124,6 @@ h1,h2,h3{font-weight:400;margin:0}
 @media (hover:hover){.dock-item::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);white-space:nowrap;
   background:var(--ink);color:var(--bg);font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;opacity:0;pointer-events:none;transition:opacity .15s}
   .dock-item:hover::after{opacity:1}}
-.search-pop{position:fixed;z-index:7;left:50%;transform:translateX(-50%);width:min(420px,calc(100vw - 32px));bottom:calc(14px + var(--dock-h) + 12px + env(safe-area-inset-bottom,0px))}
-.search-pop input{width:100%;font:inherit;font-size:16px;color:var(--ink);background:var(--surface);border:1px solid var(--logo);border-radius:999px;padding:12px 18px;outline:none;box-shadow:0 10px 30px rgb(0 0 0/.6)}
 .push-right{margin-left:auto}
 
 .player{position:fixed;inset:0;z-index:20;background:#000;display:flex;flex-direction:column}
@@ -170,3 +168,18 @@ h1,h2,h3{font-weight:400;margin:0}
 .score{display:flex;align-items:baseline;gap:4px;margin-top:6px}
 .score b{font-family:var(--display);font-weight:400;font-size:22px;color:#ffc04d;line-height:1}
 .score span{font-size:12px;color:var(--muted)}
+
+.page-title{font-family:var(--display);font-size:26px;margin:4px 0 16px}
+.filter-form{display:flex;flex-direction:column;gap:12px;margin-bottom:24px}
+.filter-search{width:100%;font:inherit;font-size:16px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 16px;outline:none}
+.filter-search:focus{border-color:var(--logo)}
+.filter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media (min-width:720px){.filter-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.filter-grid select{appearance:none;-webkit-appearance:none;width:100%;min-width:0;font:inherit;font-size:15px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 34px 12px 14px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23a0a0a0' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 14px center;text-overflow:ellipsis}
+.filter-grid select.set{color:var(--ink);border-color:var(--logo)}
+.filter-actions{display:flex;gap:8px;flex-wrap:wrap}
+.filter-actions .btn{background:var(--logo);color:#000}
+.filter-actions .btn.ghost{background:var(--raise);color:var(--ink)}
+.more{display:flex;justify-content:center;margin-top:20px}
