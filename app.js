@@ -16,7 +16,7 @@ let addons = store.get("addons", []);      // [{url, manifest, enabled}]
 let repos = store.get("repos", []);        // [{url, name, entries:[{url,name,description}]}]
 let watchlist = store.get("watchlist", {}); // route -> {route,title,poster,added}
 let progress = store.get("progress", {});   // videoKey -> {t,d,updated,route,title,poster,label,ep}
-let builtinOff = store.get("builtinOff", {});
+let builtinOff = store.get("builtinOff", { "builtin:archive": true }); // archive cartoons start switched off
 const saveAddons = () => store.set("addons", addons);
 
 let tt;
