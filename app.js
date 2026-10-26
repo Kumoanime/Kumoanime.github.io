@@ -20,7 +20,7 @@ let builtinOff = store.get("builtinOff", {});
 const saveAddons = () => store.set("addons", addons);
 
 let tt;
-function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(tt); tt = setTimeout(() => t.hidden = true, 2600); }
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; t.style.display = ""; clearTimeout(tt); tt = setTimeout(() => { t.hidden = true; t.style.display = "none"; }, 2600); }
 
 // ---------- AniList ----------
 const MEDIA_FIELDS = `id idMal title{romaji english} coverImage{large color} bannerImage format status episodes
@@ -383,6 +383,7 @@ function play(s, info) {
   const stage = $("#playerStage");
   $("#playerTitle").textContent = info.label;
   $("#player").hidden = false;
+  $("#player").style.display = "";
   document.body.style.overflow = "hidden";
   current = info;
   if (s.ytId) {
@@ -412,6 +413,7 @@ function closePlayer() {
   clearInterval(saveTimer); hls?.destroy(); hls = null;
   $("#playerStage").innerHTML = "";
   $("#player").hidden = true;
+  $("#player").style.display = "none";
   document.body.style.overflow = "";
   current = null;
   route();
