@@ -16,7 +16,7 @@ let addons = store.get("addons", []);      // [{url, manifest, enabled}]
 let repos = store.get("repos", []);        // [{url, name, entries:[{url,name,description}]}]
 let watchlist = store.get("watchlist", {}); // route -> {route,title,poster,added}
 let progress = store.get("progress", {});   // videoKey -> {t,d,updated,route,title,poster,label,ep}
-let builtinOff = store.get("builtinOff", { "builtin:archive": true }); // archive cartoons start switched off
+let builtinOff = store.get("builtinOff", {});
 const saveAddons = () => store.set("addons", addons);
 
 let tt;
@@ -72,28 +72,6 @@ const BUILTINS = [
     async stream(type, id, ctx) {
       const t = ctx?.media?.trailer;
       return t && t.site === "youtube" ? [{ name: "Trailer", title: "Official trailer · YouTube", ytId: t.id }] : [];
-    },
-  },
-  {
-    key: "builtin:archive",
-    manifest: { id: "kumo.archive", name: "Internet Archive classics", version: "1.0.0", description: "Public-domain cartoons and animation from archive.org, free to stream.", resources: ["catalog", "meta", "stream"], types: ["movie"], idPrefixes: ["ia:"], catalogs: [{ type: "movie", id: "ia-cartoons", name: "Public-domain cartoons" }] },
-    async catalog() {
-      const q = encodeURIComponent("collection:(classic_cartoons) AND mediatype:(movies)");
-      const r = await fetch(`https://archive.org/advancedsearch.php?q=${q}&fl[]=identifier&fl[]=title&fl[]=year&rows=40&sort[]=downloads+desc&output=json`);
-      const j = await r.json();
-      return j.response.docs.map(d => ({ id: "ia:" + d.identifier, type: "movie", name: d.title, poster: `https://archive.org/services/img/${d.identifier}`, posterShape: "landscape", releaseInfo: d.year }));
-    },
-    async meta(type, id) {
-      const ident = id.slice(3);
-      const j = await (await fetch(`https://archive.org/metadata/${ident}`)).json();
-      const md = j.metadata || {};
-      return { id, type: "movie", name: [].concat(md.title)[0], description: stripHtml([].concat(md.description)[0]), poster: `https://archive.org/services/img/${ident}`, releaseInfo: md.year, _files: j.files };
-    },
-    async stream(type, id) {
-      const ident = id.slice(3);
-      const j = await (await fetch(`https://archive.org/metadata/${ident}`)).json();
-      return (j.files || []).filter(f => /\.mp4$/i.test(f.name)).slice(0, 4)
-        .map(f => ({ name: "Archive.org", title: `${f.name}${f.size ? " · " + Math.round(f.size / 1048576) + " MB" : ""}`, url: `https://archive.org/download/${ident}/${encodeURIComponent(f.name)}` }));
     },
   },
 ];
@@ -319,7 +297,7 @@ function renderStreams(box, results, info) {
   const kind = s => s.ytId ? "YouTube" : s.url ? (/\.m3u8/i.test(s.url) ? "HLS" : "Video") : s.externalUrl ? "Opens site" : s.infoHash ? "Torrent" : "Unknown";
   box.innerHTML = `<div class="streams"><h3>${esc(info.short)}</h3>
     ${rows.length ? rows.map((x, i) => `<button class="stream" data-i="${i}"><div><b>${esc(x.s.name || x.a.manifest.name)}</b><span>${esc(x.s.title || x.s.description || "")}</span></div><span class="kind">${kind(x.s)}</span></button>`).join("")
-      : `<p class="note">None of your add-ons have a source for this yet. ${addons.length ? "" : "Kumo's built-in add-ons only cover trailers and public-domain classics, so install more under Add-ons."}</p>`}
+      : `<p class="note">None of your add-ons have a source for this yet. ${addons.length ? "" : "Kumo's built-in add-on only covers trailers, so install more under Add-ons."}</p>`}
     ${failed.length ? `<p class="note">No answer from: ${failed.map(esc).join(", ")}.</p>` : ""}</div>`;
   box.querySelectorAll("[data-i]").forEach(b => b.onclick = () => play(rows[+b.dataset.i].s, info));
 }
