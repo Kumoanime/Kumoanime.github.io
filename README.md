@@ -6,7 +6,7 @@ An anime browser and player for your phone. Show info and artwork come from [Ani
 
 Kumo speaks the open [Stremio add-on protocol](https://github.com/Stremio/stremio-addon-sdk/blob/master/docs/protocol.md). Paste an add-on's `manifest.json` link under **Add-ons** to install it. Anime episodes are requested with Kitsu ids (`kitsu:<id>:<episode>`), then MAL, then AniList ids.
 
-Built in: **Official trailers**, which plays each show's trailer from YouTube.
+Each show page has a **Trailer** button that plays the official trailer from YouTube.
 
 ## Repositories
 

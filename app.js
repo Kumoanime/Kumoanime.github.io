@@ -65,17 +65,9 @@ async function kitsuId(malId) {
 }
 
 // ---------- add-ons ----------
-// Built-ins use the same shape as remote add-ons, with local handlers.
-const BUILTINS = [
-  {
-    key: "builtin:trailers",
-    manifest: { id: "kumo.trailers", name: "Official trailers", version: "1.0.0", description: "Plays each show's official trailer from YouTube.", resources: ["stream"], types: ["series", "movie", "anime"], idPrefixes: ["anilist"] },
-    async stream(type, id, ctx) {
-      const t = ctx?.media?.trailer;
-      return t && t.site === "youtube" ? [{ name: "Trailer", title: "Official trailer · YouTube", ytId: t.id }] : [];
-    },
-  },
-];
+// Built-ins use the same shape as remote add-ons, with local handlers. None ship today:
+// trailers have their own button on the show page.
+const BUILTINS = [];
 
 function allAddons() {
   return [
@@ -218,6 +210,7 @@ async function viewAnime(id, epParam) {
     <p class="desc">${esc(stripHtml(m.description)).replace(/\n/g, "<br>")}</p>
     <div class="actions">
       <button class="btn" id="playNext">▶ ${isMovie ? "Play" : "Play episode " + nextEpisode(route, count)}</button>
+      ${m.trailer?.site === "youtube" ? `<button class="btn ghost" id="playTrailer">🎬 Trailer</button>` : ""}
       <button class="btn ghost" id="toggleList">${inList ? "✓ Watching" : "+ Watching"}</button>
     </div>
     ${isMovie ? "" : section("Episodes", `<div class="eps">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
@@ -228,6 +221,7 @@ async function viewAnime(id, epParam) {
   const ctx = { media: m, route, title, poster: m.coverImage?.large };
   $("#toggleList").onclick = () => { toggleWatch(route, title, m.coverImage?.large); viewAnime(id); };
   $("#playNext").onclick = () => loadAniStreams(ctx, isMovie ? 1 : nextEpisode(route, count), isMovie);
+  if ($("#playTrailer")) $("#playTrailer").onclick = () => play({ ytId: m.trailer.id }, { label: `${title} · Trailer`, key: `${route}:trailer` });
   app.querySelectorAll("[data-ep]").forEach(b => b.onclick = () => loadAniStreams(ctx, +b.dataset.ep, false));
   if (epParam) loadAniStreams(ctx, +epParam, isMovie);
 }
@@ -301,7 +295,7 @@ function renderStreams(box, results, info) {
   const kind = s => s.ytId ? "YouTube" : s.url ? (/\.m3u8/i.test(s.url) ? "HLS" : "Video") : s.externalUrl ? "Opens site" : s.infoHash ? "Torrent" : "Unknown";
   box.innerHTML = `<div class="streams"><h3>${esc(info.short)}</h3>
     ${rows.length ? rows.map((x, i) => `<button class="stream" data-i="${i}"><div><b>${esc(x.s.name || x.a.manifest.name)}</b><span>${esc(x.s.title || x.s.description || "")}</span></div><span class="kind">${kind(x.s)}</span></button>`).join("")
-      : `<p class="note">None of your add-ons have a source for this yet. ${addons.length ? "" : "Kumo's built-in add-on only covers trailers, so install more under Add-ons."}</p>`}
+      : `<p class="note">None of your add-ons have a source for this yet. ${addons.length ? "" : "Install an add-on under Add-ons to get episode sources."}</p>`}
     ${failed.length ? `<p class="note">No answer from: ${failed.map(esc).join(", ")}.</p>` : ""}</div>`;
   box.querySelectorAll("[data-i]").forEach(b => b.onclick = () => play(rows[+b.dataset.i].s, info));
 }
