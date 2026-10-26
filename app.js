@@ -151,7 +151,10 @@ function card(href, title, poster, sub, extra = "") {
   return `<a class="card" href="${href}"><div class="cover">${poster ? `<img src="${esc(poster)}" alt="" loading="lazy">` : `<div class="ph">${esc(title)}</div>`}${extra}</div>
     <div class="t">${esc(title)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</a>`;
 }
-const aniCard = m => card(`#/a/${m.id}`, titleOf(m), m.coverImage?.large, [m.seasonYear, m.format?.replace("_", " ")].filter(Boolean).join(" · "));
+// Ratings: AniList scores are 0–100, shown out of 10; add-on metas may carry imdbRating
+const ratingBadge = r => r ? `<span class="rating" aria-label="Rated ${r} out of 10">★ ${r}</span>` : "";
+const aniRating = m => m.averageScore ? (m.averageScore / 10).toFixed(1) : "";
+const aniCard = m => card(`#/a/${m.id}`, titleOf(m), m.coverImage?.large, [m.seasonYear, m.format?.replace("_", " ")].filter(Boolean).join(" · "), ratingBadge(aniRating(m)));
 const skelRail = () => `<div class="rail">${Array(6).fill(`<div class="card"><div class="cover skel"></div></div>`).join("")}</div>`;
 function section(title, body, note = "") { return `<section class="section"><div class="section-head"><h2>${esc(title)}</h2>${note ? `<small>${esc(note)}</small>` : ""}</div>${body}</section>`; }
 
@@ -179,7 +182,7 @@ async function viewHome() {
     const el = $(`#cat-${i}`); if (!el) return;
     try {
       const metas = (await call(a, "catalog", c.type, c.id)) || [];
-      el.innerHTML = metas.length ? section(c.name || c.id, `<div class="rail">${metas.slice(0, 30).map(m => card(metaRoute(a, m.type, m.id), m.name, m.poster, m.releaseInfo)).join("")}</div>`, a.manifest.name) : "";
+      el.innerHTML = metas.length ? section(c.name || c.id, `<div class="rail">${metas.slice(0, 30).map(m => card(metaRoute(a, m.type, m.id), m.name, m.poster, m.releaseInfo, ratingBadge(m.imdbRating))).join("")}</div>`, a.manifest.name) : "";
     } catch { el.innerHTML = section(c.name || c.id, `<p class="note">${esc(a.manifest.name)} didn't respond.</p>`, a.manifest.name); }
   });
 }
@@ -211,7 +214,7 @@ async function viewAnime(id, epParam) {
   app.innerHTML = `
     <div class="hero">${m.bannerImage ? `<div class="banner" style="background-image:url('${esc(m.bannerImage)}')"></div>` : `<div class="banner"></div>`}
       <div class="hero-body"><div class="cover"><img src="${esc(m.coverImage?.large)}" alt=""></div>
-        <div><h1>${esc(title)}</h1><div class="facts">${[studio, m.seasonYear, m.format?.replace("_", " "), m.averageScore ? m.averageScore + "%" : "", m.episodes ? m.episodes + " eps" : ""].filter(Boolean).map(esc).join(" · ")}</div></div></div></div>
+        <div><h1>${esc(title)}</h1>${m.averageScore ? `<div class="score"><b>★ ${aniRating(m)}</b><span>/10 on AniList</span></div>` : ""}<div class="facts">${[studio, m.seasonYear, m.format?.replace("_", " "), m.episodes ? m.episodes + " eps" : ""].filter(Boolean).map(esc).join(" · ")}</div></div></div></div>
     <p class="desc">${esc(stripHtml(m.description)).replace(/\n/g, "<br>")}</p>
     <div class="actions">
       <button class="btn" id="playNext">▶ ${isMovie ? "Play" : "Play episode " + nextEpisode(route, count)}</button>
@@ -272,7 +275,7 @@ async function viewMeta(key, type, id) {
   app.innerHTML = `
     <div class="hero">${m.background ? `<div class="banner" style="background-image:url('${esc(m.background)}')"></div>` : `<div class="banner"></div>`}
       <div class="hero-body"><div class="cover">${m.poster ? `<img src="${esc(m.poster)}" alt="">` : ""}</div>
-        <div><h1>${esc(m.name)}</h1><div class="facts">${[m.releaseInfo, (m.genres || []).slice(0, 3).join(", "), a.manifest.name].filter(Boolean).map(esc).join(" · ")}</div></div></div></div>
+        <div><h1>${esc(m.name)}</h1>${m.imdbRating ? `<div class="score"><b>★ ${esc(m.imdbRating)}</b><span>/10</span></div>` : ""}<div class="facts">${[m.releaseInfo, (m.genres || []).slice(0, 3).join(", "), a.manifest.name].filter(Boolean).map(esc).join(" · ")}</div></div></div></div>
     ${m.description ? `<p class="desc">${esc(m.description)}</p>` : ""}
     <div class="actions">${videos.length ? "" : `<button class="btn" id="playMain">▶ Play</button>`}<button class="btn ghost" id="toggleList">${inList ? "✓ Watching" : "+ Watching"}</button></div>
     ${videos.length ? section("Episodes", `<div class="vlist">${videos.map(v => `<button class="vrow" data-vid="${esc(v.id)}">${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" loading="lazy">` : ""}<div><b>${esc(v.title || v.name || "Episode " + v.episode)}</b><span>${[v.season != null ? "S" + v.season : "", v.episode != null ? "E" + v.episode : ""].join(" ")}</span></div></button>`).join("")}</div>`) : ""}
