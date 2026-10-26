@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kumo</title>
+<meta name="description" content="Anime browser and player that streams from the add-ons you install.">
+<meta name="theme-color" content="#13111c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kumo">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="logo" href="#/">Kumo</a>
+    <form class="search" id="searchForm" role="search">
+      <input id="q" type="search" placeholder="Search anime" autocomplete="off" aria-label="Search anime">
+    </form>
+  </div>
+</header>
+
+<main id="app" class="wrap"></main>
+
+<nav class="tabbar" aria-label="Sections">
+  <a href="#/" data-tab="home">Home</a>
+  <a href="#/list" data-tab="list">My list</a>
+  <a href="#/addons" data-tab="addons">Add-ons</a>
+</nav>
+
+<div id="player" class="player" hidden>
+  <div class="player-top">
+    <button id="playerClose" class="icon-btn" aria-label="Close player">←</button>
+    <div class="player-title" id="playerTitle"></div>
+  </div>
+  <div class="player-stage" id="playerStage"></div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
