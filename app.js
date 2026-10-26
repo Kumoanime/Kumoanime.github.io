@@ -15,6 +15,7 @@ const store = {
 let addons = store.get("addons", []);      // [{url, manifest, enabled}]
 let repos = store.get("repos", []);        // [{url, name, entries:[{url,name,description}]}]
 let watchlist = store.get("watchlist", {}); // route -> {route,title,poster,added}
+let removed = store.get("removed", {});     // route -> time removed, so a sync doesn't bring it back
 let progress = store.get("progress", {});   // videoKey -> {t,d,updated,route,title,poster,label,ep}
 let builtinOff = store.get("builtinOff", {});
 const saveAddons = () => store.set("addons", addons);
@@ -135,7 +136,7 @@ async function addRepo(url) {
 }
 
 // ---------- progress ----------
-function saveProgress(key, data) { progress[key] = { ...progress[key], ...data, updated: Date.now() }; store.set("progress", progress); }
+function saveProgress(key, data) { progress[key] = { ...progress[key], ...data, updated: Date.now() }; store.set("progress", progress); scheduleSync(); }
 function continueItems() {
   const byShow = {};
   for (const [k, p] of Object.entries(progress)) {
@@ -303,10 +304,11 @@ function renderStreams(box, results, info) {
 }
 
 function toggleWatch(route, title, poster) {
-  if (watchlist[route]) { delete watchlist[route]; toast("Removed from Watching"); }
+  if (watchlist[route]) { delete watchlist[route]; removed[route] = Date.now(); store.set("removed", removed); toast("Removed from Watching"); }
   else { watchlist[route] = { route, title, poster, added: Date.now() }; toast("Added to Watching"); }
   store.set("watchlist", watchlist);
   loadNotes();
+  scheduleSync();
 }
 
 function viewList() {
@@ -441,12 +443,125 @@ function toggleNotes(open) {
   panel.style.display = panel.hidden ? "none" : "";
   if (!panel.hidden) { renderBell(); notesSeen = Date.now(); store.set("notesSeen", notesSeen); setTimeout(() => { $("#bellCount").hidden = true; }, 600); }
 }
-$("#bellBtn").onclick = e => { e.stopPropagation(); toggleNotes(); };
+$("#bellBtn").onclick = e => { e.stopPropagation(); togglePanel("#acctPanel", false); toggleNotes(); };
 document.addEventListener("click", e => { if (!e.target.closest("#notesPanel, #bellBtn")) toggleNotes(false); });
 window.addEventListener("hashchange", () => toggleNotes(false));
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadNotes(); });
 setInterval(loadNotes, 15 * 60 * 1000);
 loadNotes();
+
+// ---------- accounts (Supabase) ----------
+// Sign up / log in with email + password. Watching and progress are kept in one
+// row per person (public.user_data, protected by row-level security).
+const SUPABASE_URL = "https://xaiwuqyudxmypdairyab.supabase.co";
+const SUPABASE_KEY = "sb_publishable_XH_vVGedmDfC0KTNUqpWbA_q35TWZXL"; // publishable key: safe in page code
+const sb = window.supabase && !SUPABASE_KEY.startsWith("PASTE") ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, detectSessionInUrl: true } }) : null;
+let account = null, syncTimer = null, syncState = "", recovering = false;
+
+function mergeData(remote) {
+  const w = { ...(remote?.watchlist || {}) };
+  for (const [r, item] of Object.entries(watchlist)) if (!w[r] || (item.added || 0) > (w[r].added || 0)) w[r] = item;
+  for (const [r, t] of Object.entries(removed)) if (w[r] && (w[r].added || 0) < t) delete w[r];
+  const p = { ...(remote?.progress || {}) };
+  for (const [k, v] of Object.entries(progress)) if (!p[k] || (v.updated || 0) > (p[k].updated || 0)) p[k] = v;
+  watchlist = w; progress = p;
+  store.set("watchlist", watchlist); store.set("progress", progress);
+}
+async function pullAndMerge() {
+  if (!sb || !account) return;
+  const { data, error } = await sb.from("user_data").select("watchlist,progress").eq("user_id", account.id).maybeSingle();
+  if (error) { syncState = "Couldn't sync. Check your connection."; return renderAccount(); }
+  mergeData(data);
+  await pushNow();
+  loadNotes(); route();
+}
+async function pushNow() {
+  if (!sb || !account) return;
+  clearTimeout(syncTimer);
+  const { error } = await sb.from("user_data").upsert({ user_id: account.id, watchlist, progress, updated_at: new Date().toISOString() });
+  syncState = error ? "Couldn't sync. Check your connection." : "Synced " + new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  renderAccount();
+}
+function scheduleSync() { if (account) { clearTimeout(syncTimer); syncTimer = setTimeout(pushNow, 2000); } }
+
+function renderAccount() {
+  const btn = $("#acctBtn");
+  btn.innerHTML = account ? `<span class="avatar">${esc((account.email || "?")[0].toUpperCase())}</span>`
+    : `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.4 0-8 2.2-8 5v1a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1c0-2.8-3.6-5-8-5Z"/></svg>`;
+  btn.setAttribute("aria-label", account ? "Your account" : "Sign up or log in");
+  const panel = $("#acctPanel"); if (panel.hidden) return;
+  if (!sb) { panel.innerHTML = `<div class="notes-head">Account</div><p class="notes-empty">Accounts aren't switched on yet.</p>`; return; }
+  if (account && recovering) {
+    panel.innerHTML = `<div class="notes-head">Set a new password</div><form class="acct-body" id="pwForm">
+      <label for="newPass">New password</label><input id="newPass" type="password" autocomplete="new-password" minlength="6" required>
+      <button class="btn" type="submit">Save password</button><p class="acct-msg" id="pwMsg" role="status"></p></form>`;
+    $("#pwForm").onsubmit = async e => {
+      e.preventDefault();
+      const { error } = await sb.auth.updateUser({ password: $("#newPass").value });
+      if (error) { $("#pwMsg").textContent = error.message; return; }
+      recovering = false; toast("Password saved"); renderAccount();
+    };
+    return;
+  }
+  if (account) {
+    panel.innerHTML = `<div class="notes-head">Account</div><div class="acct-body"><p class="acct-email">${esc(account.email)}</p>
+      <p class="muted small">Your Watching list and progress sync to every device you log in on.${syncState ? "<br>" + esc(syncState) : ""}</p>
+      <button class="btn ghost small" id="acctSync">Sync now</button> <button class="btn ghost small" id="acctOut">Log out</button></div>`;
+    $("#acctSync").onclick = () => pullAndMerge();
+    $("#acctOut").onclick = async () => { await pushNow(); await sb.auth.signOut(); toast("Logged out"); };
+    return;
+  }
+  const mode = panel.dataset.mode || "signup";
+  panel.innerHTML = `<div class="acct-tabs"><button data-mode="signup" aria-pressed="${mode === "signup"}">Create account</button><button data-mode="login" aria-pressed="${mode === "login"}">Log in</button></div>
+    <form class="acct-body" id="acctForm">
+      <label for="acctEmail">Email</label><input id="acctEmail" type="email" autocomplete="email" required>
+      <label for="acctPass">Password</label><input id="acctPass" type="password" autocomplete="${mode === "signup" ? "new-password" : "current-password"}" minlength="6" required>
+      <button class="btn" type="submit">${mode === "signup" ? "Create account" : "Log in"}</button>
+      ${mode === "login" ? `<button class="linkbtn" type="button" id="acctForgot">Forgot password?</button>` : `<p class="muted small">Syncs your Watching list and progress between devices.</p>`}
+      <p class="acct-msg" id="acctMsg" role="status"></p>
+    </form>`;
+  panel.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => { panel.dataset.mode = b.dataset.mode; renderAccount(); });
+  const msg = t => { $("#acctMsg").textContent = t; };
+  $("#acctForm").onsubmit = async e => {
+    e.preventDefault();
+    const email = $("#acctEmail").value.trim(), password = $("#acctPass").value;
+    const btn = e.target.querySelector("[type=submit]"); btn.disabled = true; msg("");
+    const res = mode === "signup"
+      ? await sb.auth.signUp({ email, password, options: { emailRedirectTo: location.origin + "/" } })
+      : await sb.auth.signInWithPassword({ email, password });
+    btn.disabled = false;
+    if (res.error) return msg(res.error.message.includes("Invalid login") ? "That email and password don't match." : res.error.message);
+    if (mode === "signup" && !res.data.session) msg(`Check ${email} for a confirmation link, then come back and log in.`);
+  };
+  const f = $("#acctForgot");
+  if (f) f.onclick = async () => {
+    const email = $("#acctEmail").value.trim();
+    if (!email) return msg("Type your email above first.");
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + "/" });
+    msg(error ? error.message : `If ${email} has an account, a reset link is on its way.`);
+  };
+}
+function togglePanel(id, open) {
+  const p = $(id);
+  p.hidden = open === undefined ? !p.hidden : !open;
+  p.style.display = p.hidden ? "none" : "";
+  return !p.hidden;
+}
+$("#acctBtn").onclick = e => { e.stopPropagation(); toggleNotes(false); if (togglePanel("#acctPanel")) renderAccount(); };
+document.addEventListener("click", e => { if (!e.target.closest("#acctPanel, #acctBtn")) togglePanel("#acctPanel", false); });
+window.addEventListener("hashchange", () => togglePanel("#acctPanel", false));
+if (sb) {
+  sb.auth.onAuthStateChange((event, session) => {
+    const was = account?.id;
+    account = session?.user || null;
+    if (/access_token|type=recovery/.test(location.hash)) history.replaceState(null, "", location.pathname + "#/");
+    if (event === "PASSWORD_RECOVERY") { recovering = true; togglePanel("#acctPanel", true); }
+    if (account && account.id !== was) { syncState = ""; pullAndMerge(); toast("Logged in"); }
+    renderAccount();
+  });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) pushNow(); else if (account) pullAndMerge(); });
+}
+renderAccount();
 
 // ---------- routing ----------
 function route() {
