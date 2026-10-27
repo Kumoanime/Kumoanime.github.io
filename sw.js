@@ -1,7 +1,9 @@
 "use strict";
-// Network-first for the app shell only. Cross-origin stream URLs, Range
-// requests, and everything else go straight to the network and are not cached.
-const SHELL = /\/$|\.(?:html|js|css)$/;
+// Network-first for the app shell only, so a cold open picks up this deploy
+// (index.html, the opening splash, style.css, and the manifest) instead of a
+// stale copy. Cross-origin stream URLs, Range requests, and everything else
+// go straight to the network and are not cached.
+const SHELL = /\/$|\.(?:html|js|css|webmanifest)$/;
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
 self.addEventListener("fetch", event => {
