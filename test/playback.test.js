@@ -77,6 +77,9 @@ const noHash = P.explainFailure({ hash: "", token: true, proxy: true });
 assert.equal(noHash.kind, "hash");
 assert.ok(/torrent hash/.test(noHash.message));
 assert.ok(!/add a proxy/i.test(noHash.message));
+const slate = P.explainFailure({ hash: HASH, token: false, proxy: false, block: { kind: "status", step: "comet", message: "Comet's link is blocked by Real-Debrid (copyright filter)." } });
+assert.equal(slate.kind, "status");
+assert.ok(/step comet/.test(slate.detail));
 const noToken = P.explainFailure({ hash: HASH, token: false, proxy: true });
 assert.equal(noToken.kind, "token");
 assert.ok(/no real-debrid token/i.test(noToken.message));
@@ -170,7 +173,23 @@ async function fakeResolve(overrides, safari) {
     },
   });
   assert.equal(blocked.ok, false);
-  assert.equal(blocked.kind, "infringing");
+  assert.equal(blocked.kind, "refused");
+  assert.equal(blocked.step, "addMagnet");
+  assert.equal(blocked.status, 451);
+  assert.ok(!/blocked these files/i.test(blocked.message));
+
+  const cometBlocked = P.nextFromCometResolve({ ok: false, blocked: true, kind: "infringing", step: "comet", status: 200, reason: "INFRINGING_FILE" });
+  assert.equal(cometBlocked.action, "blocked");
+  assert.equal(cometBlocked.step, "comet");
+  const cometFile = P.nextFromCometResolve({ ok: true, id: "FILE1", download: "https://1.download.real-debrid.com/d/FILE1/Show.mkv", filename: "Show.mkv" });
+  assert.equal(cometFile.action, "transcode");
+  assert.equal(cometFile.id, "FILE1");
+  assert.equal(P.nextFromCometResolve({ ok: false, step: "comet", error: "Host not allowed" }).action, "magnet");
+  const refused = P.explainFailure({ hash: "0123456789abcdef0123456789abcdef01234567", token: true, proxy: true, block: blocked });
+  assert.equal(refused.kind, "refused");
+  assert.ok(/step addMagnet/.test(refused.detail), refused.detail);
+  assert.ok(/HTTP 451/.test(refused.detail));
+  assert.ok(!/add a proxy/i.test(refused.message));
 
   const chrome = await P.resolveRealDebrid({
     hash: "0123456789abcdef0123456789abcdef01234567",

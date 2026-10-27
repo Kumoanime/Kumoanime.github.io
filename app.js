@@ -635,14 +635,42 @@ function rdSection() {
       <button class="btn">Save</button>
     </form>
     ${saved ? `<button class="btn ghost small" id="rdClear" type="button">Forget pasted token</button>` : ""}
-    <p class="note">Deploy <code>rd-proxy/worker.js</code> (it only forwards calls to api.real-debrid.com) and paste the address above. The token stays in this browser.</p>
+    <p class="note">Deploy <code>rd-proxy/worker.js</code> with <code>npx wrangler deploy</code> and paste the address above. Redeploy it when that file changes. The token stays in this browser. The worker follows Comet's link, then asks Real-Debrid to transcode that file.</p>
   </section>`;
 }
-function rdEndpoint(target) {
+function proxyBase() {
   let proxy = rdProxy();
-  if (!proxy) return target;
+  if (!proxy) return "";
   if (!/^https?:\/\//i.test(proxy)) proxy = "https://" + proxy;
-  return proxy.replace(/\/+$/, "").replace(/[?#].*$/, "") + "?url=" + encodeURIComponent(target);
+  return proxy.replace(/\/+$/, "").replace(/[?#].*$/, "");
+}
+function rdEndpoint(target) {
+  const base = proxyBase();
+  return base ? base + "?url=" + encodeURIComponent(target) : target;
+}
+async function resolveViaComet(playbackUrl) {
+  const base = proxyBase();
+  if (!base) return null;
+  try {
+    const r = await fetch(base + "/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ url: playbackUrl }),
+      credentials: "omit",
+    });
+    const text = await r.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch {}
+    if (!body || typeof body !== "object") return { ok: false, step: "comet", status: r.status, error: "Proxy resolve HTTP " + r.status };
+    if (!body.status && !r.ok) body.status = r.status;
+    return body;
+  } catch (e) {
+    return { ok: false, step: "comet", error: e?.message || "fetch failed" };
+  }
+}
+async function rdCall(token, step, method, path, params) {
+  try { return await rdRequest(token, method, path, params); }
+  catch (e) { e.step = step; throw e; }
 }
 async function rdRequest(token, method, path, params) {
   const target = "https://api.real-debrid.com/rest/1.0" + path;
@@ -687,6 +715,39 @@ async function probeStream(url) {
   } catch { return null; }
   finally { clearTimeout(t); }
 }
+function stepOf(path) {
+  if (path.startsWith("/torrents/addMagnet")) return "addMagnet";
+  if (path.startsWith("/torrents/selectFiles")) return "selectFiles";
+  if (path.startsWith("/torrents/info")) return "info";
+  if (path.startsWith("/unrestrict/")) return "unrestrict";
+  if (path.startsWith("/streaming/transcode")) return "transcode";
+  return "rd";
+}
+async function playResolvedId(token, plan, safari) {
+  const ids = [plan.id];
+  let last = null;
+  const transcode = async id => {
+    const body = await rdCall(token, "transcode", "GET", "/streaming/transcode/" + encodeURIComponent(id));
+    return KumoPlayback.pickTranscode(body, safari);
+  };
+  try {
+    const picked = await transcode(plan.id);
+    if (picked) return { ok: true, url: picked.url, type: picked.type };
+  } catch (e) { last = KumoPlayback.failRd(e); }
+  if (plan.download) {
+    try {
+      const un = await rdCall(token, "unrestrict", "POST", "/unrestrict/link", { link: plan.download });
+      const again = [un?.id, KumoPlayback.idFromDownload(un?.download)].filter((v, i, a) => v && a.indexOf(v) === i && !ids.includes(v));
+      for (const id of again) {
+        try {
+          const picked = await transcode(id);
+          if (picked) return { ok: true, url: picked.url, type: picked.type };
+        } catch (e) { last = KumoPlayback.failRd(e); }
+      }
+    } catch (e) { last = KumoPlayback.failRd(e); }
+  }
+  return { ok: false, block: last || { kind: "unsupported", step: "transcode", message: "Real-Debrid didn't return a playable stream for Comet's file." } };
+}
 function streamContext(s, info) {
   const parts = KumoPlayback.playbackParts(s.url) || {};
   return { hash: KumoPlayback.hashOf(s) || parts.hash, fileIndex: parts.fileIndex, season: parts.season, episode: parts.episode || info?.ep || null };
@@ -705,10 +766,6 @@ async function prepareStream(s, info) {
     if (container && !P.browserCanPlay(container, safari)) return { skip: true, kind: "unsupported", message: mkvHelp(false), externalUrl: s.url };
     return { url: s.url, type: P.sourceType(s.url) };
   }
-  if (P.isDebridResolver(s.url)) {
-    const klass = P.classifyProbe(await probeStream(s.url), s);
-    if (klass === "status") return { skip: true, kind: "status", message: "Real-Debrid blocked that file, so the add-on sent an error clip instead of the episode." };
-  }
   const ctx = streamContext(s, info);
   const auth = rdToken();
   const proxy = rdProxy();
@@ -717,18 +774,34 @@ async function prepareStream(s, info) {
     const explained = P.explainFailure({ hash: ctx.hash, token: !!auth, proxy: !!proxy, block });
     return { skip: true, kind: explained.kind, message: explained.message, detail: explained.detail, externalUrl: s.url };
   };
+  // The phone can see Comet's error clip directly. A redirect is opaque, so a
+  // saved proxy has to follow it. A 451 from our own API calls is not this.
+  if (P.isDebridResolver(s.url)) {
+    const klass = P.classifyProbe(await probeStream(s.url), s);
+    if (klass === "status") return giveUp({ kind: "status", step: "comet", message: "Comet's link is blocked by Real-Debrid (copyright filter)." });
+  }
   let block = null;
-  // A saved proxy is the only way the page can call Real-Debrid. Always try it
-  // when the browser can't play the file, even if an earlier call was blocked.
+  const cacheKey = [ctx.hash, ctx.fileIndex, ctx.season, ctx.episode, safari ? 1 : 0].join(":");
+  const remember = (url, type) => { const prepared = { url, type, debrid: true }; if (ctx.hash) rdPlayCache.set(cacheKey, prepared); return prepared; };
+  if (P.isDebridResolver(s.url) && proxy && auth) {
+    const plan = P.nextFromCometResolve(await resolveViaComet(s.url));
+    if (plan.action === "blocked") return giveUp({ kind: "infringing", step: "comet", status: plan.status, message: plan.message, error: plan.reason });
+    if (plan.action === "transcode") {
+      const played = await playResolvedId(auth.token, plan, safari);
+      if (played.ok) return remember(played.url, played.type);
+      // Comet already unrestricted this file. Don't redo addMagnet on a 451.
+      return giveUp(played.block);
+    }
+  }
+  // Magnet is only for when Comet never handed back a download id.
   if ((P.isDebridResolver(s.url) || !directOk) && ctx.hash && auth && (proxy || !rdCorsBlocked)) {
-    const key = [ctx.hash, ctx.fileIndex, ctx.season, ctx.episode, safari ? 1 : 0].join(":");
-    if (rdPlayCache.has(key)) return { ...rdPlayCache.get(key), debrid: true };
-    const resolved = await P.resolveRealDebrid({ ...ctx, safari, clientIp: await clientIp(), request: (method, path, params) => rdRequest(auth.token, method, path, params) });
-    if (resolved.ok) { const prepared = { url: resolved.url, type: resolved.type, debrid: true }; rdPlayCache.set(key, prepared); return prepared; }
+    if (rdPlayCache.has(cacheKey)) return { ...rdPlayCache.get(cacheKey), debrid: true };
+    const resolved = await P.resolveRealDebrid({ ...ctx, safari, clientIp: await clientIp(), request: (method, path, params) => rdCall(auth.token, stepOf(path), method, path, params) });
+    if (resolved.ok) return remember(resolved.url, resolved.type);
     if (resolved.kind === "cors" && !proxy) rdCorsBlocked = true;
     block = resolved;
   }
-  const hard = block && ["infringing", "status", "uncached", "rate", "auth", "ip", "proxy", "cors", "hash", "token"].includes(block.kind);
+  const hard = block && ["infringing", "status", "refused", "uncached", "rate", "auth", "ip", "proxy", "cors", "hash", "token"].includes(block.kind);
   if (hard || !directOk) return giveUp(block);
   const type = P.sourceType(s.url) || (container === "mp4" || container === "m4v" ? "video/mp4" : container === "webm" ? "video/webm" : container === "m3u8" ? "application/vnd.apple.mpegurl" : undefined);
   return { url: s.url, type, debrid: true, checkStatus: P.isDebridResolver(s.url) };
@@ -740,7 +813,8 @@ function failureHtml(attempts, lastExternal) {
   if (kinds.length && kinds.every(k => k === "status" || k === "infringing")) {
     title = "Real-Debrid blocked these files";
     body = "The add-on sent its own error clip instead of the episode, usually because Real-Debrid's copyright filter refused the file. Try another add-on.";
-  } else if (kinds.includes("proxy")) title = "Real-Debrid proxy failed";
+  } else if (kinds.includes("refused")) title = "Real-Debrid refused the request";
+  else if (kinds.includes("proxy")) title = "Real-Debrid proxy failed";
   else if (kinds.includes("hash")) title = "Couldn't read this source";
   else if (kinds.includes("auth") || kinds.includes("token")) title = "Real-Debrid token was refused";
   else if (kinds.includes("uncached") && !kinds.some(k => k === "cors" || k === "unsupported")) title = "Not cached on Real-Debrid";
