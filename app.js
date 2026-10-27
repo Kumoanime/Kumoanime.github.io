@@ -343,15 +343,30 @@ async function fetchAniStreams(ctx, ep, isMovie) {
   for (const a of allAddons().filter(a => a.enabled)) {
     const spec = resourceSpec(a.manifest, "stream");
     if (!spec) { report.push({ a, why: "doesn't provide episodes (it may only add catalogues or subtitles)" }); continue; }
-    const c = cands.find(c => handles(a, "stream", c.id));
-    if (!c) { report.push({ a, why: `only accepts ${(spec.idPrefixes || []).join(", ") || "unknown"} ids, which Kumo couldn't find for this show` }); continue; }
-    const type = isMovie ? "movie" : c.anime && spec.types.includes("anime") ? "anime" : "series";
-    jobs.push(call(a, "stream", type, c.id, ctx).then(st => {
-      st = st || [];
-      if (!st.length) report.push({ a, why: "answered but had nothing for this episode" });
-      else if (!st.some(z => z.url || z.ytId || z.externalUrl)) report.push({ a, why: "only has torrent sources, which browsers can't play" });
-      return { a, streams: st };
-    }, e => { report.push({ a, why: e.status ? `returned an error (${e.status})` : "didn't respond. It may be offline, or it blocks apps on other websites" }); return { a, failed: true }; }));
+    // Try each id format the add-on accepts (up to 3) until one returns sources. A network
+    // failure means the add-on itself is unreachable, so other ids won't help.
+    const usable = cands.filter(c => handles(a, "stream", c.id)).slice(0, 3);
+    if (!usable.length) { report.push({ a, why: `only accepts ${(spec.idPrefixes || []).join(", ") || "unknown"} ids, which Kumo couldn't find for this show` }); continue; }
+    jobs.push((async () => {
+      const tried = [];
+      for (const c of usable) {
+        const type = isMovie ? "movie" : c.anime && spec.types.includes("anime") ? "anime" : "series";
+        const fmt = c.id.split(":")[0].replace(/^tt\d+$/, "imdb");
+        try {
+          const st = await call(a, "stream", type, c.id, ctx);
+          if (st.length) {
+            if (!st.some(z => z.url || z.ytId || z.externalUrl)) report.push({ a, why: "only has torrent sources, which browsers can't play" });
+            return { a, streams: st };
+          }
+          tried.push(`${fmt}: no results`);
+        } catch (e) {
+          if (!e.status) { report.push({ a, why: "didn't respond. It may be offline, or it blocks apps on other websites" }); return { a, failed: true }; }
+          tried.push(`${fmt}: error ${e.status}`);
+        }
+      }
+      report.push({ a, why: `had nothing for this episode (tried ${tried.join(", ")})` });
+      return { a, streams: [] };
+    })());
   }
   const label = isMovie ? "Movie" : `Episode ${ep}`;
   const info = {
