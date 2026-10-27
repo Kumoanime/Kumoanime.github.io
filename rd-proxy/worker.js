@@ -8,6 +8,12 @@
 //     returns that file id. It does not send the Real-Debrid token to Comet,
 //     and it does not proxy video bytes.
 //
+// Public ElfHosted Comet binds each playback link to the IP that fetched the
+// stream list (https://docs.elfhosted.com/m/wrong-ip). This worker has a
+// different IP, so public links come back as slate.elfhosted.com with
+// "Opened on a different connection". That is not a copyright block. A private
+// or self-hosted Comet is not IP-bound, and /resolve can still see its file id.
+//
 // Deploy with `npx wrangler deploy` from this folder. A change here does
 // nothing until that deploy.
 
@@ -42,6 +48,26 @@ export function hostAllowedForResolve(hostname) {
   const h = String(hostname || "").toLowerCase();
   return h === "elfhosted.com" || h.endsWith(".elfhosted.com")
     || h === "real-debrid.com" || h.endsWith(".real-debrid.com");
+}
+
+// Any request URL on slate.elfhosted.com is the slate, including a 206 of
+// slate.mp4 (~6.5 MB). title= is the reason. Wrong-IP is not "blocked".
+export function slateFromUrl(url) {
+  let u;
+  try { u = url instanceof URL ? url : new URL(String(url || "")); }
+  catch { return null; }
+  if (!/(^|\.)slate\.elfhosted\.com$/i.test(u.hostname)) return null;
+  const title = u.searchParams.get("title") || "";
+  const docs = u.searchParams.get("url") || "";
+  const wrong = /different connection|wrong[ -]?ip/i.test(`${title} ${docs}`);
+  const infringing = /INFRINGING_FILE|couldn'?t start this stream/i.test(title);
+  if (wrong && !infringing) {
+    return { ok: false, blocked: false, kind: "wrong-ip", step: "comet", reason: title || "Opened on a different connection" };
+  }
+  if (infringing) {
+    return { ok: false, blocked: true, kind: "infringing", step: "comet", reason: title || "INFRINGING_FILE" };
+  }
+  return { ok: false, blocked: false, kind: "slate", step: "comet", reason: title || "Comet error slate" };
 }
 
 export function downloadFromUrl(url) {
@@ -106,6 +132,8 @@ export async function resolvePlayback(startUrl, doFetch) {
     return { ok: false, step: "comet", error: "Host not allowed" };
   }
   for (let hop = 0; hop < MAX_HOPS; hop++) {
+    const slate = slateFromUrl(current);
+    if (slate) return slate;
     const direct = downloadFromUrl(current);
     if (direct) return { ok: true, step: "comet", ...direct };
     let res;
@@ -154,7 +182,8 @@ async function readTarget(request) {
 async function handleResolve(request, doFetch) {
   const raw = await readTarget(request);
   const result = await resolvePlayback(raw, doFetch);
-  return json(request, result.blocked ? 200 : (result.ok ? 200 : 502), result);
+  const known = result.ok || result.blocked || result.kind === "wrong-ip" || result.kind === "slate";
+  return json(request, known ? 200 : 502, result);
 }
 
 async function handleApi(request, doFetch) {

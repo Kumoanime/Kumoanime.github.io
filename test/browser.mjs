@@ -52,6 +52,12 @@ const server = http.createServer((req, res) => {
           url: `http://127.0.0.1:${port}/media/episode.mp4`,
           behaviorHints: { filename: "Show.S01E01.mp4" },
         },
+        {
+          name: "[RD⬇️] Comet 480p",
+          description: "uncached",
+          url: `http://127.0.0.1:${port}/media/episode.mp4?uncached=1`,
+          behaviorHints: { filename: "Show.S01E01.480p.mkv" },
+        },
       ],
     };
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -123,13 +129,21 @@ const result = await page.evaluate(() => {
     err: document.querySelector(".err")?.textContent || "",
     status: document.querySelector("#wtStatus")?.textContent || "",
     labels: [...document.querySelectorAll(".wt-src .nm")].map(n => n.textContent),
+    showAll: [...document.querySelectorAll(".wt-toggle")].some(b => b.textContent.includes("Show all sources")),
+    player: document.querySelector("#extPlayer")?.value || "",
   };
 });
 console.log(JSON.stringify(result, null, 2));
 
 let blocked = "";
 try {
-  if (!result.src.includes("episode.mp4") || result.ready < 2 || !result.width) {
+  if (!result.showAll || result.player !== "infuse") {
+    console.error("expected Show all sources and Infuse as the outside player");
+    process.exitCode = 1;
+  } else if (result.labels.some(n => n.includes("480p"))) {
+    console.error("uncached source should be hidden until Show all sources");
+    process.exitCode = 1;
+  } else if (!result.src.includes("episode.mp4") || result.ready < 2 || !result.width) {
     console.error("expected the playable MP4, got the result above");
     process.exitCode = 1;
   } else if (result.src.includes("/playback/")) {
@@ -137,6 +151,25 @@ try {
     process.exitCode = 1;
   } else {
     await page.evaluate(() => { const v = document.querySelector("video"); if (v) v.pause(); });
+    const showAll = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll(".wt-toggle")].find(b => b.textContent.includes("Show all sources"));
+      btn.click();
+      return [...document.querySelectorAll(".wt-src")].map(b => ({
+        name: b.querySelector(".nm").textContent,
+        bad: b.classList.contains("bad"),
+        note: b.querySelector("small").textContent,
+      }));
+    });
+    console.log("after show all", JSON.stringify(showAll));
+    const uncached = showAll.find(r => r.name.includes("480p"));
+    const blockedRow = showAll.find(r => r.name.includes("1080p"));
+    if (!uncached) {
+      console.error("Show all sources did not reveal the uncached link");
+      process.exitCode = 1;
+    } else if (!blockedRow?.bad || !/Blocked by Real-Debrid/.test(blockedRow.note || "")) {
+      console.error("a slate should stay listed as blocked and greyed when Show all is on");
+      process.exitCode = 1;
+    }
     await page.evaluate(async () => {
       const s = {
         name: "[RD⚡] Comet 1080p",

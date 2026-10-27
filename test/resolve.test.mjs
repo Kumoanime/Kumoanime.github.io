@@ -21,6 +21,34 @@ assert.equal(slate.blocked, true);
 assert.equal(slate.step, "comet");
 assert.equal(slate.reason, "INFRINGING_FILE");
 
+const slateUrl = "https://slate.elfhosted.com/slate.m3u8?title=" + encodeURIComponent("Opened on a different connection") + "&url=" + encodeURIComponent("https://docs.elfhosted.com/m/wrong-ip");
+let slateFetched = false;
+const wrongIp = await resolvePlayback(comet, async url => {
+  assert.equal(url, comet);
+  return new Response(null, { status: 302, headers: { Location: slateUrl } });
+});
+assert.equal(wrongIp.ok, false);
+assert.equal(wrongIp.blocked, false);
+assert.equal(wrongIp.kind, "wrong-ip");
+assert.match(wrongIp.reason, /different connection/);
+
+const wrongDirect = await resolvePlayback(slateUrl, async () => {
+  slateFetched = true;
+  return new Response(new Uint8Array(32), {
+    status: 206,
+    headers: { "Content-Type": "video/mp4", "Content-Length": "6500000", "Content-Range": "bytes 0-31/6500000" },
+  });
+});
+assert.equal(slateFetched, false, "a slate host is not treated as a playable 206");
+assert.equal(wrongDirect.kind, "wrong-ip");
+assert.equal(wrongDirect.ok, false);
+
+const infringeUrl = "https://slate.elfhosted.com/slate.m3u8?title=" + encodeURIComponent("Couldn't start this stream");
+const infringe = await resolvePlayback(infringeUrl, async () => { throw new Error("should not fetch the slate"); });
+assert.equal(infringe.blocked, true);
+assert.equal(infringe.kind, "infringing");
+assert.match(infringe.reason, /Couldn't start/);
+
 const ranged = await resolvePlayback(comet, async () => new Response(new Uint8Array(16), {
   status: 206,
   headers: { "Content-Type": "video/mp4", "Content-Range": "bytes 0-15/800000000" },
