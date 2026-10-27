@@ -624,7 +624,7 @@ function play(s, info, addonKey, mount) {
   }
   stage.innerHTML = `
     <div class="pv" id="pv">
-      <video id="vid" playsinline autoplay preload="metadata" crossorigin="anonymous"></video>
+      <video id="vid" playsinline preload="auto"></video>
       <div class="pv-zones"><div data-zone="-10"></div><div data-zone="0"></div><div data-zone="10"></div></div>
       <div class="pv-flash" id="pvFlash" hidden></div>
       <div class="pv-spin" id="pvSpin"></div>
@@ -636,7 +636,7 @@ function play(s, info, addonKey, mount) {
       <div class="pv-ui">
         <div class="pv-mid">
           <button class="pv-btn" id="pvBack" aria-label="Back 10 seconds">${ICON.back}</button>
-          <button class="pv-btn big" id="pvPlay" aria-label="Pause">${ICON.pause}</button>
+          <button class="pv-btn big" id="pvPlay" aria-label="Play">${ICON.play}</button>
           <button class="pv-btn" id="pvFwd" aria-label="Forward 10 seconds">${ICON.fwd}</button>
         </div>
         <div class="pv-bar">
@@ -658,12 +658,23 @@ function play(s, info, addonKey, mount) {
   else v.src = s.url;
   v.playbackRate = prefs.speed;
   v.addEventListener("loadedmetadata", () => { v.playbackRate = prefs.speed; const prev = progress[info.key]; if (prev?.t && prev.d && prev.t / prev.d < 0.92) v.currentTime = prev.t; }, { once: true });
-  // some hosts refuse crossorigin requests; retry once without it (subtitles from blobs still work)
-  v.addEventListener("error", () => {
-    if (v.hasAttribute("crossorigin") && !hls) { v.removeAttribute("crossorigin"); v.src = s.url; v.load(); return; }
+  // Never leave the spinner up with no explanation: report errors, formats iPhones can't play,
+  // and sources that haven't started after 20 seconds.
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const badFormat = /\.(mkv|avi|wmv|flv)(\?|$)/i.test(s.url) && (isIOS || /^((?!chrome|android).)*safari/i.test(navigator.userAgent));
+  const fail = msg => {
+    clearTimeout(stallTimer);
     $("#pvSpin").hidden = true;
-    stage.insertAdjacentHTML("beforeend", `<div class="err">This source wouldn't play. Close the player and try another one.</div>`);
+    stage.querySelector(".err")?.remove();
+    stage.insertAdjacentHTML("beforeend", `<div class="err">${msg}</div>`);
+  };
+  let stallTimer = setTimeout(() => { if (!v.readyState) fail(badFormat ? "This source is an MKV or similar file, which Safari on iPhone can't play. Pick another source." : "This source isn't loading. Pick another one, or try again later."); }, 20000);
+  v.addEventListener("loadedmetadata", () => { clearTimeout(stallTimer); stage.querySelector(".err")?.remove(); });
+  v.addEventListener("error", () => {
+    if (hls) return;
+    fail(badFormat ? "This source is an MKV or similar file, which Safari on iPhone can't play. Pick another source." : "This source wouldn't play. Pick another one.");
   });
+  hls?.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) fail("This stream wouldn't play. Pick another source."); });
 
   // controls visibility
   const show = () => { host.classList.remove("idle"); clearTimeout(hideTimer); if (!v.paused && $("#pvMenu").hidden) hideTimer = setTimeout(() => host.classList.add("idle"), 3000); };
@@ -688,6 +699,8 @@ function play(s, info, addonKey, mount) {
   v.addEventListener("waiting", () => $("#pvSpin").hidden = false);
   v.addEventListener("playing", () => $("#pvSpin").hidden = true);
   v.addEventListener("canplay", () => $("#pvSpin").hidden = true);
+  v.addEventListener("loadeddata", () => $("#pvSpin").hidden = true);
+  v.addEventListener("pause", () => $("#pvSpin").hidden = true);
 
   // seek bar, time, Skip intro and Next episode visibility
   let seeking = false, introUsed = false;
@@ -784,6 +797,16 @@ function play(s, info, addonKey, mount) {
     else if (e.key === "n" && info.next) goNext();
   };
   show();
+  // Start playing. iPhones often refuse to start a video that wasn't tapped; then hide the
+  // spinner and leave the big play button up so one tap starts it.
+  const p = v.play();
+  if (p) p.catch(err => {
+    if (err?.name !== "NotAllowedError") return;
+    $("#pvSpin").hidden = true;
+    $("#pvPlay").innerHTML = ICON.play; $("#pvPlay").setAttribute("aria-label", "Play");
+    host.classList.remove("idle"); clearTimeout(hideTimer);
+    flash("Tap ▶ to start");
+  });
 }
 
 // Play the next episode with a source from the same add-on if possible, else the first playable one
