@@ -3,10 +3,6 @@ import SwiftUI
 struct WatchingView: View {
     @EnvironmentObject private var model: AppModel
 
-    private var items: [WatchItem] {
-        model.watchlist.values.sorted { $0.added > $1.added }
-    }
-
     private var recent: [ProgressItem] {
         model.continueItems()
     }
@@ -15,21 +11,13 @@ struct WatchingView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 Text("Watching").font(Theme.display(26))
-                if items.isEmpty {
-                    EmptyBlock(title: "You're not watching anything yet", message: "Tap + Watching on any show to keep it here and get told when new episodes come out.")
-                } else {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 12)], alignment: .leading, spacing: 16) {
-                        ForEach(items) { item in
-                            if let route = AppRoute.stored(item.key) {
-                                NavigationLink(value: route) {
-                                    PosterCard(title: item.title, poster: item.poster, subtitle: nil)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
+                if recent.isEmpty {
+                    if model.watchlist.isEmpty {
+                        EmptyBlock(title: "You're not watching anything yet", message: "Tap + Watching on any show to keep it on Home and get told when new episodes come out.")
+                    } else {
+                        EmptyBlock(title: "Nothing in progress", message: "Your shows are on Home. Start an episode and it will show up here.")
                     }
-                }
-                if !recent.isEmpty {
+                } else {
                     VStack(alignment: .leading, spacing: 10) {
                         SectionHead(title: "Recently watched")
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 128), spacing: 12)], alignment: .leading, spacing: 16) {
@@ -44,7 +32,7 @@ struct WatchingView: View {
                         }
                     }
                 }
-                Text("Your shows and progress are saved on this device.")
+                Text("Your shows are on Home. Progress is saved on this device.")
                     .font(Theme.body(13))
                     .foregroundStyle(Theme.muted)
             }

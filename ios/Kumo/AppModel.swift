@@ -89,6 +89,10 @@ final class AppModel: ObservableObject {
         return byShow.values.sorted { $0.updated > $1.updated }.prefix(15).map { $0 }
     }
 
+    func watchingItems() -> [WatchItem] {
+        watchlist.values.sorted { $0.added > $1.added }
+    }
+
     func toggleWatch(key: String, title: String, poster: String?) {
         if watchlist[key] != nil {
             watchlist.removeValue(forKey: key)

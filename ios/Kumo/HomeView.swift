@@ -26,6 +26,20 @@ struct HomeView: View {
                         }
                     }
                 }
+                if !model.watchingItems().isEmpty {
+                    section("Currently Watching") {
+                        Rail {
+                            ForEach(model.watchingItems()) { item in
+                                if let route = AppRoute.stored(item.key) {
+                                    NavigationLink(value: route) {
+                                        PosterCard(title: item.title, poster: item.poster, subtitle: nil)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                }
                 rail("Trending now", items: trending)
                 rail(seasonTitle.isEmpty ? "This season" : seasonTitle, items: season)
                 rail("All-time favourites", items: favourites)
