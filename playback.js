@@ -204,8 +204,12 @@
     const proxy = !!info?.proxy;
     const block = info?.block || null;
     const asksForProxy = block && (block.kind === "cors" || /add a proxy|blocks websites/i.test(block.message || ""));
+    const cometBlocked = block && (block.kind === "status" || (block.kind === "infringing" && block.step === "comet"));
     let kind, message;
-    if (!hash) {
+    if (cometBlocked) {
+      kind = block.kind;
+      message = block.message || "Comet's link is blocked by Real-Debrid (copyright filter).";
+    } else if (!hash) {
       kind = "hash";
       message = "Couldn't find the torrent hash in this source.";
     } else if (!token) {
@@ -224,7 +228,10 @@
       kind = "unsupported";
       message = "Real-Debrid didn't return a playable stream.";
     }
-    const bits = ["kind " + kind, "hash " + (hash ? "yes" : "no"), "token " + (token ? "yes" : "no"), "proxy " + (proxy ? "yes" : "no")];
+    const step = block?.step || info?.step || "";
+    const bits = ["kind " + kind];
+    if (step) bits.push("step " + step);
+    bits.push("hash " + (hash ? "yes" : "no"), "token " + (token ? "yes" : "no"), "proxy " + (proxy ? "yes" : "no"));
     const status = block?.status || info?.status;
     if (status) bits.push("HTTP " + status);
     const err = block?.error || info?.error;
@@ -416,14 +423,14 @@
     let added;
     try {
       added = await request("POST", "/torrents/addMagnet", withIp({ magnet: "magnet:?xt=urn:btih:" + hash }));
-    } catch (e) { return failRd(e); }
+    } catch (e) { return failRd(Object.assign(e, { step: "addMagnet" })); }
     const id = added?.id;
     if (!id) return { ok: false, kind: "unavailable", message: "Real-Debrid didn't accept that torrent." };
 
     let info;
     try { info = await waitForFiles(request, id); }
-    catch (e) { return failRd(e); }
-    if (/magnet_error|error|dead|virus/.test(info.status || "")) return { ok: false, kind: "unavailable", message: "Real-Debrid couldn't open that torrent." };
+    catch (e) { return failRd(Object.assign(e, { step: "info" })); }
+    if (/magnet_error|error|dead|virus/.test(info.status || "")) return { ok: false, kind: "unavailable", step: "info", message: "Real-Debrid couldn't open that torrent." };
 
     const file = pickTorrentFile(info.files, opts);
     if (!file) return { ok: false, kind: "unavailable", message: "Couldn't find this episode inside that release." };
@@ -432,10 +439,10 @@
     if (!already) {
       try { await request("POST", "/torrents/selectFiles/" + id, withIp({ files: String(file.id) })); }
       catch (e) {
-        if (rdErrorKind(e.status, e.code, e.message) !== "error" || +e.code !== 31) return failRd(e);
+        if (rdErrorKind(e.status, e.code, e.message) !== "error" || +e.code !== 31) return failRd(Object.assign(e, { step: "selectFiles" }));
       }
       try { info = await waitForFiles(request, id); }
-      catch (e) { return failRd(e); }
+      catch (e) { return failRd(Object.assign(e, { step: "info" })); }
     }
 
     if (info.status && info.status !== "downloaded" && !(info.links || []).length) {
@@ -446,14 +453,14 @@
 
     let un;
     try { un = await request("POST", "/unrestrict/link", withIp({ link })); }
-    catch (e) { return failRd(e); }
-    if (!un || un.error) return failRd(Object.assign(new Error(un?.error || "unrestrict"), { status: 400, code: un?.error_code }));
+    catch (e) { return failRd(Object.assign(e, { step: "unrestrict" })); }
+    if (!un || un.error) return failRd(Object.assign(new Error(un?.error || "unrestrict"), { status: 400, code: un?.error_code, step: "unrestrict" }));
 
     const ids = [un.id, idFromDownload(un.download)].filter((v, i, a) => v && a.indexOf(v) === i);
     let transcode = null, transcodeError = null;
     for (const tid of ids) {
       try { transcode = await request("GET", "/streaming/transcode/" + encodeURIComponent(tid)); break; }
-      catch (e) { transcodeError = e; }
+      catch (e) { e.step = "transcode"; transcodeError = e; }
     }
     const picked = pickTranscode(transcode, !!opts.safari);
     if (picked) return { ok: true, url: picked.url, type: picked.type, filename: un.filename || file.path || "" };
@@ -463,7 +470,7 @@
     if (un.download && browserCanPlay(container, !!opts.safari)) return { ok: true, url: un.download, type: sourceType(un.download) || "video/mp4", filename: name };
     if (transcodeError) {
       const kind = rdErrorKind(transcodeError.status, transcodeError.code, transcodeError.message);
-      if (kind === "infringing" || kind === "auth" || kind === "rate") return failRd(transcodeError);
+      if (kind === "infringing" || kind === "auth" || kind === "rate") return failRd(Object.assign(transcodeError, { step: "transcode" }));
     }
     return { ok: false, kind: "unsupported", message: "Real-Debrid only has the original " + (container || "MKV").toUpperCase() + ", which this browser can't play.", filename: name };
   }
@@ -482,10 +489,16 @@
   }
 
   function failRd(e) {
-    const kind = e?.proxy ? "proxy" : e?.cors ? "cors" : rdErrorKind(e?.status, e?.code, e?.message);
+    const step = e?.step || "";
+    // A 451 from Kumo's own addMagnet/unrestrict is not Comet's error slate.
+    // Only step "comet" stays "infringing", which is what the player calls blocked.
+    let kind = e?.proxy ? "proxy" : e?.cors ? "cors" : rdErrorKind(e?.status, e?.code, e?.message);
+    if (kind === "infringing" && step !== "comet") kind = "refused";
+    const where = step || "request";
     const message = {
       auth: "Real-Debrid refused the token. Reconnect it in the add-on, or paste a new token on the Add-ons page.",
-      infringing: "Real-Debrid blocked that file (copyright filter).",
+      infringing: "Comet's link is blocked by Real-Debrid (copyright filter).",
+      refused: "Real-Debrid refused Kumo's own " + where + " call" + (e?.status ? " (HTTP " + e.status + ")" : "") + ". Comet's link was not blocked.",
       rate: "Real-Debrid asked us to slow down. Wait a moment and try again.",
       cors: "Real-Debrid's API blocks browsers. Add the proxy URL on the Add-ons page.",
       proxy: "The saved proxy didn't get an answer from Real-Debrid.",
@@ -493,7 +506,17 @@
       unavailable: "Real-Debrid doesn't have a playable copy of that file.",
     }[kind] || "Real-Debrid didn't return a playable stream.";
     const error = e?.cause?.message || (kind === "proxy" || kind === "cors" ? e?.message : "") || "";
-    return { ok: false, kind, message, status: e?.status || 0, error };
+    return { ok: false, kind, message, status: e?.status || 0, error, step };
+  }
+
+  // What to do with the worker's /resolve result. Magnet is only the fallback
+  // when Comet never produced a download id. A blocked Comet link stops there.
+  function nextFromCometResolve(body) {
+    if (body?.blocked) {
+      return { action: "blocked", kind: "infringing", step: "comet", status: body.status || 0, reason: body.reason || "INFRINGING_FILE", message: "Comet's link is blocked by Real-Debrid (copyright filter)." };
+    }
+    if (body?.ok && body.id) return { action: "transcode", id: String(body.id), download: body.download || "", filename: body.filename || "", step: "comet" };
+    return { action: "magnet", step: body?.step || "comet", status: body?.status || 0, error: body?.error || "" };
   }
 
   function externalPlayers(url) {
@@ -510,7 +533,7 @@
     isCachedStream, isUncachedStream, rankStream, orderStreams, playbackOrder, hashOf,
     playbackParts, sourceType, kindLabel, classifyProbe, tokenFromUrl, tokenFromAddons,
     pickTorrentFile, pickTranscode, idFromDownload, rdErrorKind, resolveRealDebrid, externalPlayers,
-    normalizeInfoHash, explainFailure,
+    normalizeInfoHash, explainFailure, failRd, nextFromCometResolve,
   };
   root.KumoPlayback = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

@@ -100,6 +100,7 @@ page.on("console", msg => { if (msg.type() === "error") console.log("console", m
 
 await page.goto(origin + "/#/addons", { waitUntil: "domcontentloaded" });
 await page.waitForSelector("#addonUrl");
+await page.waitForFunction(() => !document.getElementById("splash"), { timeout: 5000 });
 await page.type("#addonUrl", origin + "/addon/manifest.json");
 await page.click("#addonForm button");
 await page.waitForFunction(() => document.body.innerText.includes("Test Debrid"), { timeout: 10000 });
