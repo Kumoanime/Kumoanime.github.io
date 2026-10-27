@@ -352,6 +352,7 @@ async function fetchAniStreams(ctx, ep, isMovie) {
       for (const c of usable) {
         const type = isMovie ? "movie" : c.anime && spec.types.includes("anime") ? "anime" : "series";
         const fmt = c.id.split(":")[0].replace(/^tt\d+$/, "imdb");
+        if (spec.types.length && !spec.types.includes(type)) { tried.push(`${fmt}: skipped, add-on doesn't take ${type}`); continue; }
         try {
           const st = await call(a, "stream", type, c.id, ctx);
           if (st.length) {
@@ -360,6 +361,7 @@ async function fetchAniStreams(ctx, ep, isMovie) {
           }
           tried.push(`${fmt}: no results`);
         } catch (e) {
+          console.warn(`[Kumo] ${a.manifest.name} failed for ${c.id}:`, e);
           if (!e.status) { report.push({ a, why: "didn't respond. It may be offline, or it blocks apps on other websites" }); return { a, failed: true }; }
           tried.push(`${fmt}: error ${e.status}`);
         }
