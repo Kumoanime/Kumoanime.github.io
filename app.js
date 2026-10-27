@@ -81,7 +81,17 @@ function allAddons() {
     ...addons.map(a => ({ ...a, key: a.url })),
   ];
 }
-function baseUrl(u) { return u.replace(/\/manifest\.json(\?.*)?$/, "").replace(/\/+$/, ""); }
+// Canonical form of an add-on's manifest link for duplicate checks: same host, path and
+// ?settings (in any order) means the same install; different settings are different installs.
+function addonKey(u) {
+  try {
+    const x = new URL(normaliseUrl(u));
+    let path = x.pathname.replace(/\/+$/, "");
+    if (!/\/manifest\.json$/i.test(path)) path += "/manifest.json";
+    x.searchParams.sort();
+    return `${x.origin}${path.replace(/\/manifest\.json$/i, "/manifest.json")}${x.search}`;
+  } catch { return u; }
+}
 // Build a resource URL from an add-on's manifest URL, keeping any ?query the add-on uses for its settings
 function addonUrl(manifestUrl, path) {
   const u = new URL(manifestUrl);
@@ -121,7 +131,7 @@ async function call(a, resource, type, id, ctx) {
 async function installAddon(url, quiet) {
   url = normaliseUrl(url);
   const manifestUrl = /manifest\.json/i.test(url) ? url : addonUrl(url, "manifest.json");
-  if (addons.some(a => baseUrl(a.url) === baseUrl(manifestUrl))) { if (!quiet) toast("That add-on is already installed"); return false; }
+  if (addons.some(a => addonKey(a.url) === addonKey(manifestUrl))) { if (!quiet) toast("That add-on is already installed"); return false; }
   const r = await fetch(manifestUrl);
   if (!r.ok) throw new Error(`The link answered with error ${r.status}`);
   const manifest = await r.json();
@@ -426,7 +436,7 @@ function viewList() {
 
 function viewAddons() {
   const all = allAddons();
-  const installed = new Set(addons.map(a => baseUrl(a.url)));
+  const installed = new Set(addons.map(a => addonKey(a.url)));
   app.innerHTML = `
     <section class="section"><div class="section-head"><h2>Install an add-on</h2></div>
       <p class="note">Paste the link to a Stremio-compatible add-on (it usually ends in <code>manifest.json</code>).</p>
@@ -443,7 +453,7 @@ function viewAddons() {
           ${a.builtin ? "" : `<button class="btn ghost small" data-remove="${esc(a.key)}">Remove</button>`}</div>
       </div>`).join(""), `${all.filter(a => a.enabled).length} on`)}
     ${repos.map(r => section(r.name, r.entries.map(e => {
-      const has = installed.has(baseUrl(normaliseUrl(e.url)));
+      const has = installed.has(addonKey(e.url));
       return `<div class="addon"><div class="logo-ph">${esc((e.name || "?")[0])}</div><div class="info"><b>${esc(e.name || e.url)}</b><p>${esc(e.description || e.url)}</p></div>
         <div class="ctrl">${has ? `<span class="tag on">Installed</span>` : `<button class="btn small" data-install="${esc(e.url)}">Install</button>`}</div></div>`;
     }).join("") + `<button class="btn ghost small" data-unrepo="${esc(r.url)}">Remove repository</button>`, "Repository")).join("")}`;
