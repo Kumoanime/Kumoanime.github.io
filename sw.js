@@ -13,5 +13,6 @@ self.addEventListener("fetch", event => {
   if (url.origin !== self.location.origin) return;
   if (req.headers.get("range")) return;
   if (!SHELL.test(url.pathname)) return;
-  event.respondWith(fetch(req, { cache: "no-store" }).catch(() => fetch(req)));
+  // A Request can only be used once. Clone it for the offline fallback.
+  event.respondWith(fetch(req, { cache: "no-store" }).catch(() => fetch(req.clone())));
 });

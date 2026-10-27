@@ -13,7 +13,7 @@
 <meta name="apple-mobile-web-app-title" content="Kumo">
 <style>
   html,body{margin:0;background:#000;color-scheme:dark}
-  #splash{position:fixed;top:0;right:0;bottom:0;left:0;z-index:100;background:#000;display:flex;align-items:center;justify-content:center}
+  #splash{position:fixed;top:0;right:0;bottom:0;left:0;z-index:100;background:#000;display:flex;align-items:center;justify-content:center;pointer-events:none}
   #splash .splash-k{width:200px;height:200px;flex:none}
   html.splash-skip #splash{display:none!important}
 </style>
@@ -62,7 +62,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vidstack@1.15.6/player/styles/default/theme.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vidstack@1.15.6/player/styles/default/layouts/video.css">
-<link rel="stylesheet" href="style.css?v=23">
+<link rel="stylesheet" href="style.css?v=25">
 </head>
 <body>
 <div id="splash" class="splash" aria-hidden="true">
@@ -166,6 +166,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/vidstack@1.15.6/cdn/with-layouts/vidstack.js" type="module"></script>
 <script src="playback.js?v=4"></script>
-<script src="app.js?v=26"></script>
+<script src="notify.js?v=1"></script>
+<script src="app.js?v=28"></script>
 </body>
 </html>
