@@ -12,16 +12,54 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Kumo">
 <style>
-  html,body{margin:0;background:#000;color-scheme:dark}
+  html,body{margin:0;background:#000;color:#f4f4f4;color-scheme:dark}
+  html{touch-action:manipulation}
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
   #splash{position:fixed;top:0;right:0;bottom:0;left:0;z-index:100;background:#000;display:flex;align-items:center;justify-content:center}
   #splash .splash-k{width:200px;height:200px;flex:none}
   html.splash-skip #splash{display:none!important}
+  .wrap{max-width:1200px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+  .top{position:sticky;top:0;z-index:5;background:#000;border-bottom:1px solid #262626;padding-top:env(safe-area-inset-top,0px)}
+  .bar{display:flex;align-items:center;gap:14px;padding:10px 0}
+  main{min-height:60vh}
+  .cover{aspect-ratio:2/3;border-radius:10px;overflow:hidden;background:#1e1e1e}
+  .rail{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(128px,150px);gap:12px;overflow-x:auto}
+  .card{display:flex;flex-direction:column;gap:6px;text-decoration:none;color:inherit;min-width:0}
+  .dock{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:6;display:flex;align-items:center;height:64px;padding:0 8px;border-radius:999px;background:#161616;border:1px solid #262626}
+  .dock-item{width:48px;height:48px;display:flex;align-items:center;justify-content:center;color:#a0a0a0}
+  .logo{display:flex;align-items:center;gap:9px;text-decoration:none;color:inherit}
+  .logo-mark{position:relative;width:34px;height:34px;border-radius:9px;background:#000;border:1px solid #262626;display:flex;align-items:center;justify-content:center;overflow:hidden}
+  .logo-mark span{font-family:"Dela Gothic One","Arial Black",system-ui,sans-serif;font-size:26px;line-height:1;transform:skewX(-10deg);margin-left:-2px;background:linear-gradient(180deg,#ffc432,#ff8a1f 55%,#ff6000);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .logo-word{font-family:"Dela Gothic One","Arial Black",system-ui,sans-serif;font-size:24px;letter-spacing:.04em;transform:skewX(-10deg);background:linear-gradient(180deg,#ffd166 0%,#ff8a1f 55%,#ff5e00 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .logo-mark::before,.logo-mark::after{content:"";position:absolute;left:-6px;right:-6px;top:50%;transform:rotate(-37deg)}
+  .logo-mark::before{height:3px;margin-top:-1px;background:#000}
+  .logo-mark::after{height:2px;margin-top:2px;background:#ff8a1f}
+  @font-face{font-family:"Dela Gothic One";font-style:normal;font-weight:400;font-display:swap;src:url("https://fonts.gstatic.com/s/delagothicone/v19/hESp6XxvMDRA-2eD0lXpDa6QkBA2QkEIYgpLUQ.woff2") format("woff2");unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+  .splash.splash-out{animation:splash-fade .2s ease forwards}
+  @keyframes splash-fade{to{opacity:0;visibility:hidden}}
+  @media (prefers-reduced-motion:reduce){#splash.splash.splash-out{animation:splash-fade .14s linear forwards!important}}
 </style>
 <script>
 (function () {
   try {
     var nav = performance.getEntriesByType("navigation")[0];
     if (nav && nav.type === "back_forward") document.documentElement.classList.add("splash-skip");
+  } catch (e) {}
+  try {
+    var hash = location.hash || "";
+    var show = hash.match(/^#\/(?:a|watch)\/(\d+)/);
+    var hero = show ? localStorage.getItem("kumo.hero." + show[1]) : "";
+    if (!hero && (!hash || hash === "#" || hash === "#/")) {
+      var snap = JSON.parse(localStorage.getItem("kumo.homeSnap") || "null");
+      hero = snap && snap.lcp;
+    }
+    if (hero) {
+      var link = document.createElement("link");
+      link.rel = "preload";
+      link.as = "image";
+      link.href = hero;
+      document.head.appendChild(link);
+    }
   } catch (e) {}
 })();
 </script>
@@ -58,11 +96,16 @@
 <link rel="apple-touch-startup-image" href="splash/black-2340x1080.png?v=5" media="(device-width: 780px) and (device-height: 360px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)">
 <link rel="apple-touch-startup-image" href="splash/black-640x1136.png?v=5" media="(device-width: 320px) and (device-height: 568px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
 <link rel="apple-touch-startup-image" href="splash/black-1136x640.png?v=5" media="(device-width: 568px) and (device-height: 320px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)">
+<link rel="preconnect" href="https://graphql.anilist.co" crossorigin>
+<link rel="preconnect" href="https://s4.anilist.co">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vidstack@1.15.6/player/styles/default/theme.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/vidstack@1.15.6/player/styles/default/layouts/video.css">
-<link rel="stylesheet" href="style.css?v=23">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" href="https://fonts.gstatic.com/s/delagothicone/v19/hESp6XxvMDRA-2eD0lXpDa6QkBA2QkEIYgpLUQ.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="style.css?v=27" as="style">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap"></noscript>
+<link rel="stylesheet" href="style.css?v=27" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="style.css?v=27"></noscript>
 </head>
 <body>
 <div id="splash" class="splash" aria-hidden="true">
@@ -162,10 +205,7 @@
 
 <div id="toast" class="toast" hidden style="display:none"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/vidstack@1.15.6/cdn/with-layouts/vidstack.js" type="module"></script>
-<script src="playback.js?v=4"></script>
-<script src="app.js?v=26"></script>
+<script src="playback.js?v=4" defer></script>
+<script src="app.js?v=27" defer></script>
 </body>
 </html>
