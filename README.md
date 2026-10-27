@@ -8,6 +8,14 @@ Kumo speaks the open [Stremio add-on protocol](https://github.com/Stremio/stremi
 
 Each show page has a **Trailer** button that plays the official trailer from YouTube.
 
+## Real-Debrid on iPhone
+
+Safari cannot play the MKV files Real-Debrid returns, so those sources used to sit on a black screen, spin, or play the add-on's short error clip. Kumo now skips that clip, prefers sources marked cached (the lightning bolt), and asks Real-Debrid for an HLS stream Safari can play.
+
+Real-Debrid's API does not allow browser calls. Deploy `rd-proxy/worker.js` (Cloudflare Worker: `npx wrangler deploy` inside `rd-proxy/`), then on the Add-ons page paste the worker's address. If the Comet or Torrentio install link still contains your key, Kumo uses that; otherwise paste a token from [real-debrid.com/apitoken](https://real-debrid.com/apitoken). The token stays in the browser. The proxy only forwards API calls. The video comes straight from Real-Debrid.
+
+Until that proxy is saved, a source can still be opened in VLC or Infuse from the player message. Those apps can play the original file.
+
 ## Repositories
 
 A repository is a JSON file that lists add-ons:
