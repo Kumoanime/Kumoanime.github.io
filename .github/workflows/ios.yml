@@ -1,0 +1,110 @@
+name: iOS
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unsigned-ipa:
+    name: Unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          selected=""
+          for app in /Applications/Xcode_16*.app; do
+            if [ -d "$app" ]; then
+              selected="$app"
+            fi
+          done
+          if [ -n "$selected" ]; then
+            sudo xcode-select -s "$selected"
+            echo "Using $selected"
+          else
+            echo "No Xcode 16 install found; using the image default."
+          fi
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build an unsigned device release
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Kumo.xcodeproj \
+            -scheme Kumo \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            VALIDATE_PRODUCT=NO \
+            build
+
+      - name: Pack the .ipa
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          APP="build/Build/Products/Release-iphoneos/Kumo.app"
+          if [ ! -d "$APP" ]; then
+            echo "Kumo.app was not produced"
+            find build -name "*.app" -maxdepth 6 || true
+            exit 1
+          fi
+          # The player framework has to be inside the app. A tiny archive means it was dropped.
+          if [ ! -d "$APP/Frameworks" ] && ! find "$APP" -name "MobileVLCKit*" | grep -q .; then
+            echo "MobileVLCKit was not embedded in Kumo.app"
+            find "$APP" -maxdepth 3 -type d
+            exit 1
+          fi
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP" Payload/Kumo.app
+          rm -f Kumo-unsigned.ipa
+          zip -ry Kumo-unsigned.ipa Payload
+          SIZE=$(stat -f%z Kumo-unsigned.ipa)
+          echo "IPA size: $SIZE bytes"
+          if [ "$SIZE" -lt 20000000 ]; then
+            echo "IPA is unexpectedly small; the video framework is probably missing."
+            exit 1
+          fi
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kumo-unsigned-ipa
+          path: ios/Kumo-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
