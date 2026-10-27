@@ -256,17 +256,23 @@ function viewSearch(focus) {
 }
 
 const mediaCache = {};
-async function viewAnime(id, epParam) {
+async function getMedia(id) {
+  if (!mediaCache[id]) mediaCache[id] = (await anilist(`query($id:Int){Media(id:$id,type:ANIME){${MEDIA_FIELDS} description(asHtml:false) studios(isMain:true){nodes{name}}}}`, { id: +id })).Media;
+  return mediaCache[id];
+}
+function episodeCount(m) {
+  if (m.format === "MOVIE") return 1;
+  const aired = m.nextAiringEpisode ? m.nextAiringEpisode.episode - 1 : m.episodes;
+  return Math.max(aired || 0, 0) || 12;
+}
+async function viewAnime(id) {
   app.innerHTML = `<div class="hero skel" style="height:260px"></div>`;
-  let m = mediaCache[id];
-  if (!m) {
-    try { m = mediaCache[id] = (await anilist(`query($id:Int){Media(id:$id,type:ANIME){${MEDIA_FIELDS} description(asHtml:false) studios(isMain:true){nodes{name}}}}`, { id: +id })).Media; }
-    catch { app.innerHTML = `<div class="empty"><h3>Couldn't load this show</h3>AniList didn't respond. Go back and try again.</div>`; return; }
-  }
+  let m;
+  try { m = await getMedia(id); }
+  catch { app.innerHTML = `<div class="empty"><h3>Couldn't load this show</h3>AniList didn't respond. Go back and try again.</div>`; return; }
   const route = `#/a/${id}`, title = titleOf(m);
   const isMovie = m.format === "MOVIE";
-  const aired = m.nextAiringEpisode ? m.nextAiringEpisode.episode - 1 : m.episodes;
-  const count = isMovie ? 1 : Math.max(aired || 0, 0) || 12;
+  const count = episodeCount(m);
   const inList = !!watchlist[route];
   const studio = m.studios?.nodes?.[0]?.name;
   const next = m.nextAiringEpisode ? `Ep ${m.nextAiringEpisode.episode} airs ${new Date(m.nextAiringEpisode.airingAt * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}` : "";
@@ -283,14 +289,11 @@ async function viewAnime(id, epParam) {
     ${isMovie ? "" : section("Episodes", `<div class="eps">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
       const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
       return `<button class="ep${pct > 92 ? " seen" : ""}" data-ep="${n}">${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</button>`;
-    }).join("")}</div>`, next)}
-    <div id="streams"></div>`;
-  const ctx = { media: m, route, title, poster: m.coverImage?.large, count };
+    }).join("")}</div>`, next)}`;
   $("#toggleList").onclick = () => { toggleWatch(route, title, m.coverImage?.large); viewAnime(id); };
-  $("#playNext").onclick = () => loadAniStreams(ctx, isMovie ? 1 : nextEpisode(route, count), isMovie);
+  $("#playNext").onclick = () => { autoStartOnce = true; location.hash = `#/watch/${id}/${isMovie ? 1 : nextEpisode(route, count)}`; };
   if ($("#playTrailer")) $("#playTrailer").onclick = () => play({ ytId: m.trailer.id }, { label: `${title} · Trailer`, key: `${route}:trailer` });
-  app.querySelectorAll("[data-ep]").forEach(b => b.onclick = () => loadAniStreams(ctx, +b.dataset.ep, false));
-  if (epParam) loadAniStreams(ctx, +epParam, isMovie);
+  app.querySelectorAll("[data-ep]").forEach(b => b.onclick = () => { location.hash = `#/watch/${id}/${b.dataset.ep}`; });
 }
 function nextEpisode(route, count) {
   let last = 0;
@@ -316,17 +319,9 @@ async function fetchAniStreams(ctx, ep, isMovie) {
   const label = isMovie ? "Movie" : `Episode ${ep}`;
   const info = {
     ...ctx, key: `${ctx.route}:${ep}`, label: `${ctx.title} · ${label}`, short: label, ep, subIds: ids, subType: isMovie ? "movie" : "series",
-    next: !isMovie && ep < ctx.count ? { short: `Episode ${ep + 1}`, page: `${ctx.route}/${ep + 1}`, get: () => fetchAniStreams(ctx, ep + 1, false) } : null,
+    next: !isMovie && ep < ctx.count ? { short: `Episode ${ep + 1}`, page: `#/watch/${ctx.media.id}/${ep + 1}`, watch: `#/watch/${ctx.media.id}/${ep + 1}`, get: () => fetchAniStreams(ctx, ep + 1, false) } : null,
   };
   return { results: await Promise.all(jobs), info };
-}
-async function loadAniStreams(ctx, ep, isMovie) {
-  app.querySelectorAll("[data-ep]").forEach(b => b.setAttribute("aria-current", +b.dataset.ep === ep));
-  const box = $("#streams");
-  box.innerHTML = `<div class="streams"><h3>${isMovie ? "Sources" : "Episode " + ep}</h3><p class="muted">Asking your add-ons…</p></div>`;
-  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  const { results, info } = await fetchAniStreams(ctx, ep, isMovie);
-  renderStreams(box, results, info);
 }
 
 function metaRoute(a, type, id) { return `#/m/${encodeURIComponent(a.key)}/${encodeURIComponent(type)}/${encodeURIComponent(id)}`; }
@@ -438,6 +433,73 @@ function viewAddons() {
   });
 }
 
+// ---------- watch page ----------
+// Player on the page, toggles and Prev/Next under it, then sources grouped SUB / DUB.
+// Opening an episode asks every add-on straight away and starts the first playable source.
+let autoStartOnce = false;
+const audioOf = s => { const t = `${s.name || ""} ${s.title || ""} ${s.description || ""}`; return /\bdub(bed)?\b|\beng(lish)? ?dub|\bdual\b/i.test(t) ? "dub" : /\bsub(bed|s)?\b|\bsoft ?sub|\bhard ?sub/i.test(t) ? "sub" : "other"; };
+async function viewWatch(id, ep) {
+  ep = +ep || 1;
+  app.innerHTML = `<div class="watch-stage skel"></div>`;
+  let m;
+  try { m = await getMedia(id); }
+  catch { app.innerHTML = `<div class="empty"><h3>Couldn't load this episode</h3>AniList didn't respond. Go back and try again.</div>`; return; }
+  const here = location.hash;
+  const route = `#/a/${id}`, title = titleOf(m), isMovie = m.format === "MOVIE", count = episodeCount(m);
+  const ctx = { media: m, route, title, poster: m.coverImage?.large, count };
+  const autostart = autoStartOnce || prefs.autoPlay; autoStartOnce = false;
+  const toggle = (k, label) => `<button class="wt-toggle" data-pref="${k}" aria-pressed="${!!prefs[k]}"><span class="box" aria-hidden="true"></span>${label}</button>`;
+  const air = m.nextAiringEpisode ? `Episode ${m.nextAiringEpisode.episode} arrives ${new Date(m.nextAiringEpisode.airingAt * 1000).toLocaleString(undefined, { weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" })}.` : "";
+  app.innerHTML = `
+    <div class="watch-stage" id="watchStage">
+      <div class="wt-poster" style="background-image:url('${esc(m.bannerImage || m.coverImage?.large || "")}')"></div>
+      <button class="wt-play" id="wtStart" aria-label="Play">${ICON.play}</button>
+      <div class="wt-status" id="wtStatus">Finding sources…</div>
+    </div>
+    <div class="wt-bar">
+      <div class="wt-toggles">${toggle("autoPlay", "Auto Play")}${isMovie ? "" : toggle("autoNext", "Auto Next")}${toggle("autoSkip", "Auto Skip intro")}</div>
+      ${isMovie ? "" : `<div class="wt-nav"><button class="wt-navbtn" id="wtPrev" ${ep <= 1 ? "disabled" : ""}>⏮ Prev</button><button class="wt-navbtn" id="wtNext" ${ep >= count ? "disabled" : ""}>Next ⏭</button></div>`}
+    </div>
+    <div class="wt-info">You're watching <b>${isMovie ? esc(title) : "Episode " + ep}</b>${isMovie ? "" : ` of <a href="${route}">${esc(title)}</a>`}. If a source doesn't work, try another one below.</div>
+    <div id="wtSources" class="wt-sources"><p class="muted">Asking your add-ons…</p></div>
+    ${air ? `<div class="wt-air">🔔 ${esc(air)}</div>` : ""}
+    ${isMovie ? "" : section("Episodes", `<div class="eps">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
+      const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
+      return `<a class="ep${pct > 92 ? " seen" : ""}" href="#/watch/${id}/${n}" ${n === ep ? 'aria-current="true"' : ""}>${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
+    }).join("")}</div>`)}`;
+  app.querySelectorAll("[data-pref]").forEach(b => b.onclick = () => { prefs[b.dataset.pref] = !prefs[b.dataset.pref]; store.set("playerPrefs", prefs); b.setAttribute("aria-pressed", prefs[b.dataset.pref]); });
+  if ($("#wtPrev")) $("#wtPrev").onclick = () => { autoStartOnce = true; location.hash = `#/watch/${id}/${ep - 1}`; };
+  if ($("#wtNext")) $("#wtNext").onclick = () => { autoStartOnce = true; location.hash = `#/watch/${id}/${ep + 1}`; };
+
+  const { results, info } = await fetchAniStreams(ctx, ep, isMovie);
+  if (location.hash !== here) return;
+  const rows = [];
+  for (const r of results) for (const st of r.streams) rows.push({ a: r.a, s: st, audio: audioOf(st) });
+  const failed = results.filter(r => r.failed).map(r => r.a.manifest.name);
+  const groups = [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"], ["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]];
+  const kind = st => st.ytId ? "YouTube" : st.url ? (/\.m3u8/i.test(st.url) ? "HLS" : "Video") : st.externalUrl ? "Opens site" : st.infoHash ? "Torrent" : "";
+  $("#wtSources").innerHTML = rows.length ? groups.map(([g, label, icon]) => {
+    const list = rows.map((r, i) => ({ ...r, i })).filter(r => r.audio === g);
+    return list.length ? `<div class="wt-group"><div class="wt-group-h"><span class="wt-badge">${icon}</span>${label}</div><div class="wt-grid">${list.map(r =>
+      `<button class="wt-src" data-i="${r.i}" ${playable(r.s) || r.s.externalUrl ? "" : "disabled"}><span class="dot">▶</span><span class="nm">${esc((r.s.name || r.a.manifest.name).split("\n")[0])}</span><small>${esc(r.a.manifest.name)}${kind(r.s) ? " · " + kind(r.s) : ""}</small></button>`).join("")}</div></div>` : "";
+  }).join("") : `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet. Try again later or add another add-on." : `You haven't installed any add-ons. <a href="#/addons">Open Add-ons</a> to add one.`}</div>`;
+  if (failed.length) $("#wtSources").insertAdjacentHTML("beforeend", `<p class="note">No answer from: ${failed.map(esc).join(", ")}.</p>`);
+
+  const start = i => {
+    const r = rows[i];
+    app.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", +b.dataset.i === i));
+    if (r.s.externalUrl && !playable(r.s)) return window.open(r.s.externalUrl, "_blank", "noopener");
+    play(r.s, info, r.a.key, $("#watchStage"));
+  };
+  app.querySelectorAll(".wt-src").forEach(b => b.onclick = () => start(+b.dataset.i));
+  // prefer subbed, then whatever plays
+  const firstIdx = ["sub", "other", "dub"].map(g => rows.findIndex(r => r.audio === g && playable(r.s))).find(i => i >= 0);
+  if (firstIdx === undefined) { $("#wtStatus").textContent = rows.length ? "Pick a source below." : "No sources found."; $("#wtStart").hidden = true; return; }
+  $("#wtStatus").textContent = "";
+  $("#wtStart").onclick = () => start(firstIdx);
+  if (autostart) start(firstIdx);
+}
+
 // ---------- player ----------
 // Custom controls over a plain <video>: tap to show/hide, double-tap a side to skip 10 s,
 // Skip intro (85 s, a typical anime opening), Next episode + auto-play, speed, subtitles.
@@ -450,7 +512,7 @@ const ICON = {
   fwd: `<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M20 12a8 8 0 1 1-2.6-5.9M20 4v4h-4"/><text x="12" y="15.5" font-size="7" text-anchor="middle" fill="currentColor" font-family="sans-serif" font-weight="700">10</text></svg>`,
   full: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`,
 };
-let prefs = store.get("playerPrefs", { speed: 1, subLang: "", autoNext: true });
+let prefs = { speed: 1, subLang: "", autoNext: true, autoPlay: true, autoSkip: false, ...store.get("playerPrefs", {}) };
 let hls = null, saveTimer = null, current = null, hideTimer = null, countTimer = null, blobs = [];
 const fmt = t => { t = Math.max(0, Math.floor(t || 0)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0"); };
 const playable = s => s && (s.url || s.ytId);
@@ -465,6 +527,8 @@ function teardown() {
   clearInterval(saveTimer); clearTimeout(hideTimer); clearInterval(countTimer);
   hls?.destroy(); hls = null;
   blobs.forEach(u => URL.revokeObjectURL(u)); blobs = [];
+  const host = current?.mount;
+  if (host?.isConnected) { host.querySelector(".pv")?.remove(); host.classList.remove("idle", "playing"); }
   $("#playerStage").innerHTML = "";
   $("#player").classList.remove("idle");
 }
@@ -486,12 +550,15 @@ async function subTrackUrl(url) {
   blobs.push(u); return u;
 }
 
-function play(s, info, addonKey) {
+// mount: an element on the page to play inside (the watch page); otherwise the full-screen overlay
+function play(s, info, addonKey, mount) {
   if (s.externalUrl && !s.url && !s.ytId) { window.open(s.externalUrl, "_blank", "noopener"); return; }
   teardown();
-  openShell(info.label);
-  current = { info, addonKey };
-  const stage = $("#playerStage");
+  if (!mount) openShell(info.label);
+  current = { info, addonKey, mount };
+  const host = mount || $("#player");
+  let stage = $("#playerStage");
+  if (mount) { mount.classList.add("playing"); mount.querySelector(".pv")?.remove(); mount.insertAdjacentHTML("beforeend", `<div class="pv-holder"></div>`); stage = mount.querySelector(".pv-holder"); stage.className = "pv-holder"; }
   if (s.ytId) {
     stage.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(s.ytId)}?autoplay=1&playsinline=1&rel=0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen title="${esc(info.label)}"></iframe>`;
     return;
@@ -544,8 +611,8 @@ function play(s, info, addonKey) {
   });
 
   // controls visibility
-  const show = () => { $("#player").classList.remove("idle"); clearTimeout(hideTimer); if (!v.paused && $("#pvMenu").hidden) hideTimer = setTimeout(() => $("#player").classList.add("idle"), 3000); };
-  const toggleUI = () => $("#player").classList.contains("idle") ? show() : (!v.paused && $("#player").classList.add("idle"));
+  const show = () => { host.classList.remove("idle"); clearTimeout(hideTimer); if (!v.paused && $("#pvMenu").hidden) hideTimer = setTimeout(() => host.classList.add("idle"), 3000); };
+  const toggleUI = () => host.classList.contains("idle") ? show() : (!v.paused && host.classList.add("idle"));
   const flash = txt => { const f = $("#pvFlash"); f.textContent = txt; f.hidden = false; f.style.animation = "none"; void f.offsetWidth; f.style.animation = ""; clearTimeout(flash.t); flash.t = setTimeout(() => f.hidden = true, 600); };
   const skip = d => { v.currentTime = Math.min(Math.max(0, v.currentTime + d), (v.duration || 1e9) - 0.5); flash(d > 0 ? `+${d}s` : `${d}s`); show(); };
   const togglePlay = () => { v.paused ? v.play() : v.pause(); show(); };
@@ -576,7 +643,9 @@ function play(s, info, addonKey) {
     const d = v.duration || 0, t = v.currentTime;
     if (!seeking && d) { seek.value = Math.round(t / d * 1000); $("#pvTime").textContent = fmt(t); seek.style.setProperty("--p", (t / d * 100) + "%"); }
     $("#pvDur").textContent = fmt(d);
-    $("#pvIntro").hidden = introUsed || !(d > 600 && t > 3 && t < 180);
+    const inIntro = !introUsed && d > 600 && t > 3 && t < 180;
+    if (inIntro && prefs.autoSkip) { introUsed = true; skip(85); }
+    $("#pvIntro").hidden = !inIntro || prefs.autoSkip;
     $("#pvNext").hidden = !(info.next && d && d - t < 120);
   });
   $("#pvIntro").onclick = () => { introUsed = true; skip(85); };
@@ -640,7 +709,7 @@ function play(s, info, addonKey) {
   };
 
   $("#pvFull").onclick = () => {
-    const el = $("#player");
+    const el = host;
     if (document.fullscreenElement) return document.exitFullscreen();
     if (el.requestFullscreen) el.requestFullscreen().catch(() => v.webkitEnterFullscreen?.());
     else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();
@@ -666,6 +735,7 @@ function play(s, info, addonKey) {
 async function goNext() {
   const c = current; if (!c?.info.next) return;
   const next = c.info.next;
+  if (c.mount && next.watch) { teardown(); current = null; autoStartOnce = true; location.hash = next.watch; return; }
   teardown();
   openShell(`Loading ${next.short}…`);
   $("#playerStage").innerHTML = `<div class="pv-spin"></div>`;
@@ -690,9 +760,8 @@ function closePlayer() {
 }
 $("#playerClose").onclick = closePlayer;
 document.addEventListener("keydown", e => {
-  if ($("#player").hidden) return;
-  if (e.key === "Escape") return closePlayer();
-  current?.keys?.(e);
+  if (!$("#player").hidden && e.key === "Escape") return closePlayer();
+  if (!$("#player").hidden || current?.mount) current?.keys?.(e);
 });
 
 // ---------- new-episode notifications ----------
@@ -862,9 +931,11 @@ function route() {
   const [p, ...rest] = h.split("/");
   document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === ({ "": "home", search: "search", list: "list", addons: "addons" }[p] || "") ? "page" : "false"));
   window.scrollTo(0, 0);
+  if (current?.mount) { teardown(); current = null; }
   if (!p) return viewHome();
+  if (p === "watch") return viewWatch(rest[0], rest[1]);
   if (p === "search") { if (rest[0]) filters.q = decodeURIComponent(rest.join("/")); return viewSearch(!rest[0] && !filters.q); }
-  if (p === "a") return viewAnime(rest[0], rest[1]);
+  if (p === "a") { if (rest[1]) { location.replace(`#/watch/${rest[0]}/${rest[1]}`); return; } return viewAnime(rest[0]); }
   if (p === "m") return viewMeta(decodeURIComponent(rest[0]), decodeURIComponent(rest[1]), decodeURIComponent(rest.slice(2).join("/")));
   if (p === "list") return viewList();
   if (p === "addons") return viewAddons();
