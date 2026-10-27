@@ -108,9 +108,15 @@ function handles(a, name, id) {
 async function call(a, resource, type, id, ctx) {
   if (a.builtin) return a[resource]?.(type, id, ctx);
   const r = await fetch(addonUrl(a.url, `${resource}/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`));
-  if (!r.ok) throw new Error(r.status);
+  if (!r.ok) throw Object.assign(new Error(`${a.manifest.name}: HTTP ${r.status} for ${resource}`), { status: r.status });
   const j = await r.json();
-  return resource === "catalog" ? j.metas : resource === "meta" ? j.meta : resource === "subtitles" ? j.subtitles : j.streams;
+  switch (resource) {
+    case "catalog": return j.metas ?? [];
+    case "meta": return j.meta ?? null;
+    case "subtitles": return j.subtitles ?? [];
+    case "stream": return j.streams ?? [];
+    default: throw new Error(`Unsupported resource: ${resource}`);
+  }
 }
 async function installAddon(url, quiet) {
   url = normaliseUrl(url);
@@ -335,7 +341,7 @@ async function fetchAniStreams(ctx, ep, isMovie) {
       if (!st.length) report.push({ a, why: "answered but had nothing for this episode" });
       else if (!st.some(z => z.url || z.ytId || z.externalUrl)) report.push({ a, why: "only has torrent sources, which browsers can't play" });
       return { a, streams: st };
-    }, e => { report.push({ a, why: /^\d+$/.test(e.message) ? `returned an error (${e.message})` : "didn't respond. It may be offline, or it blocks apps on other websites" }); return { a, failed: true }; }));
+    }, e => { report.push({ a, why: e.status ? `returned an error (${e.status})` : "didn't respond. It may be offline, or it blocks apps on other websites" }); return { a, failed: true }; }));
   }
   const label = isMovie ? "Movie" : `Episode ${ep}`;
   const info = {
