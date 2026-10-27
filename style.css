@@ -274,3 +274,13 @@ a.ep{text-align:center;text-decoration:none;color:inherit}
 .wt-report summary{cursor:pointer;color:var(--ink);font-weight:700}
 .wt-report ul{margin:8px 0 0;padding-left:18px;display:grid;gap:4px}
 .wt-report b{color:var(--ink)}
+
+/* ---------- Vidstack, in Kumo's colours ---------- */
+.kumo-player{position:relative;width:100%;height:100%;aspect-ratio:auto;background:#000;
+  --video-brand:#ff8a1f;--video-focus-ring-color:#ff8a1f;--video-font-family:var(--body);
+  --media-slider-track-fill-bg:#ff8a1f;--media-menu-checkbox-bg-active:#ff8a1f;--media-menu-radio-check-active-color:#ff8a1f}
+.kumo-player video{object-fit:contain}
+.kumo-player .pv-pills{bottom:calc(84px + env(safe-area-inset-bottom,0px));z-index:10}
+.watch-stage .kumo-player .pv-pills{bottom:72px}
+.kumo-player .pv-count{z-index:20}
+.player-stage .err,.pv-holder .err{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;background:rgb(0 0 0/.85);border-radius:12px;padding:16px 18px;color:#fff;text-align:center;max-width:min(40ch,90%)}

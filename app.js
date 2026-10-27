@@ -556,20 +556,14 @@ async function viewWatch(id, ep) {
 }
 
 // ---------- player ----------
-// Custom controls over a plain <video>: tap to show/hide, double-tap a side to skip 10 s,
-// Skip intro (85 s, a typical anime opening), Next episode + auto-play, speed, subtitles.
-const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
+// Vidstack does the playing and controls; Kumo adds Skip intro, Next episode + auto-play,
+// subtitles from add-ons, resume and remembered speed / subtitle language.
 const LANGS = { en: "English", eng: "English", ja: "Japanese", jpn: "Japanese", es: "Spanish", spa: "Spanish", pt: "Portuguese", por: "Portuguese", pob: "Portuguese (BR)", fr: "French", fre: "French", fra: "French", de: "German", ger: "German", deu: "German", it: "Italian", ita: "Italian", ar: "Arabic", ara: "Arabic", ru: "Russian", rus: "Russian", id: "Indonesian", ind: "Indonesian", tr: "Turkish", tur: "Turkish" };
 const ICON = {
   play: `<svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z"/></svg>`,
-  pause: `<svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path fill="currentColor" d="M7 4h3.5v16H7zM13.5 4H17v16h-3.5z"/></svg>`,
-  back: `<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 12a8 8 0 1 0 2.6-5.9M4 4v4h4"/><text x="12" y="15.5" font-size="7" text-anchor="middle" fill="currentColor" font-family="sans-serif" font-weight="700">10</text></svg>`,
-  fwd: `<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M20 12a8 8 0 1 1-2.6-5.9M20 4v4h-4"/><text x="12" y="15.5" font-size="7" text-anchor="middle" fill="currentColor" font-family="sans-serif" font-weight="700">10</text></svg>`,
-  full: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`,
 };
 let prefs = { speed: 1, subLang: "", autoNext: true, autoPlay: true, autoSkip: false, ...store.get("playerPrefs", {}) };
-let hls = null, saveTimer = null, current = null, hideTimer = null, countTimer = null, blobs = [];
-const fmt = t => { t = Math.max(0, Math.floor(t || 0)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0"); };
+let saveTimer = null, current = null, countTimer = null;
 const playable = s => s && (s.url || s.ytId);
 
 function openShell(label) {
@@ -579,11 +573,9 @@ function openShell(label) {
 }
 function teardown() {
   current?.record?.();
-  clearInterval(saveTimer); clearTimeout(hideTimer); clearInterval(countTimer);
-  hls?.destroy(); hls = null;
-  blobs.forEach(u => URL.revokeObjectURL(u)); blobs = [];
+  clearInterval(saveTimer); clearInterval(countTimer);
   const host = current?.mount;
-  if (host?.isConnected) { host.querySelector(".pv")?.remove(); host.classList.remove("idle", "playing"); }
+  if (host?.isConnected) { host.querySelector(".pv-holder")?.remove(); host.classList.remove("idle", "playing"); }
   $("#playerStage").innerHTML = "";
   $("#player").classList.remove("idle");
 }
@@ -598,12 +590,6 @@ async function gatherSubs(s, info) {
   const seen = new Set();
   return list.filter(x => x.url && !seen.has(x.url) && seen.add(x.url));
 }
-async function subTrackUrl(url) {
-  const txt = await (await fetch(url)).text();
-  const vtt = /^﻿?WEBVTT/.test(txt) ? txt : "WEBVTT\n\n" + txt.replace(/\r/g, "").replace(/(\d+:\d+:\d+),(\d+)/g, "$1.$2");
-  const u = URL.createObjectURL(new Blob([vtt], { type: "text/vtt" }));
-  blobs.push(u); return u;
-}
 
 // mount: an element on the page to play inside (the watch page); otherwise the full-screen overlay
 function play(s, info, addonKey, mount) {
@@ -613,104 +599,57 @@ function play(s, info, addonKey, mount) {
   current = { info, addonKey, mount };
   const host = mount || $("#player");
   let stage = $("#playerStage");
-  if (mount) { mount.classList.add("playing"); mount.querySelector(".pv")?.remove(); mount.insertAdjacentHTML("beforeend", `<div class="pv-holder"></div>`); stage = mount.querySelector(".pv-holder"); stage.className = "pv-holder"; }
-  if (s.ytId) {
-    stage.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(s.ytId)}?autoplay=1&playsinline=1&rel=0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen title="${esc(info.label)}"></iframe>`;
-    return;
-  }
-  if (!s.url) {
+  if (mount) { mount.classList.add("playing"); mount.querySelector(".pv-holder")?.remove(); mount.insertAdjacentHTML("beforeend", `<div class="pv-holder"></div>`); stage = mount.querySelector(".pv-holder"); }
+  if (!s.url && !s.ytId) {
     stage.innerHTML = `<div class="err">${s.infoHash ? "This source is a torrent, which web browsers can't play. Pick a different source." : "This source has no playable link."}</div>`;
     return;
   }
+
+  // Vidstack player with its default video layout (controls, gestures, settings, captions,
+  // PiP, AirPlay/Cast), plus Kumo's Skip intro / Next episode pills and auto-play countdown.
+  const src = s.ytId ? `youtube/${s.ytId}` : s.url;
+  const type = s.ytId ? undefined : /\.m3u8(\?|$)/i.test(s.url) ? "application/x-mpegurl" : /\.webm(\?|$)/i.test(s.url) ? "video/webm" : "video/mp4";
   stage.innerHTML = `
-    <div class="pv" id="pv">
-      <video id="vid" playsinline preload="auto"></video>
-      <div class="pv-zones"><div data-zone="-10"></div><div data-zone="0"></div><div data-zone="10"></div></div>
-      <div class="pv-flash" id="pvFlash" hidden></div>
-      <div class="pv-spin" id="pvSpin"></div>
+    <media-player class="kumo-player" id="vs" title="${esc(info.label)}" playsinline autoplay keep-alive>
+      <media-provider></media-provider>
+      <media-video-layout></media-video-layout>
       <div class="pv-pills">
         <button class="pv-pill" id="pvIntro" hidden>Skip intro »</button>
         <button class="pv-pill solid" id="pvNext" hidden>${info.next ? esc(info.next.short) + " ▶" : ""}</button>
       </div>
       <div class="pv-count" id="pvCount" hidden></div>
-      <div class="pv-ui">
-        <div class="pv-mid">
-          <button class="pv-btn" id="pvBack" aria-label="Back 10 seconds">${ICON.back}</button>
-          <button class="pv-btn big" id="pvPlay" aria-label="Play">${ICON.play}</button>
-          <button class="pv-btn" id="pvFwd" aria-label="Forward 10 seconds">${ICON.fwd}</button>
-        </div>
-        <div class="pv-bar">
-          <span class="pv-time" id="pvTime">0:00</span>
-          <input type="range" id="pvSeek" min="0" max="1000" value="0" step="1" aria-label="Seek">
-          <span class="pv-time" id="pvDur">0:00</span>
-        </div>
-        <div class="pv-row">
-          <button class="pv-chip" id="pvSpeed" aria-label="Playback speed">${prefs.speed}×</button>
-          <button class="pv-chip" id="pvCC" aria-label="Subtitles">CC</button>
-          ${info.next ? `<button class="pv-chip" id="pvAuto" aria-pressed="${prefs.autoNext}">Auto-play ${prefs.autoNext ? "on" : "off"}</button>` : ""}
-          <button class="pv-chip icon" id="pvFull" aria-label="Fullscreen">${ICON.full}</button>
-        </div>
-        <div class="pv-menu" id="pvMenu" hidden></div>
-      </div>
-    </div>`;
-  const v = $("#vid"), pv = $("#pv");
-  if (/\.m3u8(\?|$)/i.test(s.url) && !v.canPlayType("application/vnd.apple.mpegurl") && window.Hls?.isSupported()) { hls = new Hls(); hls.loadSource(s.url); hls.attachMedia(v); }
-  else v.src = s.url;
-  v.playbackRate = prefs.speed;
-  v.addEventListener("loadedmetadata", () => { v.playbackRate = prefs.speed; const prev = progress[info.key]; if (prev?.t && prev.d && prev.t / prev.d < 0.92) v.currentTime = prev.t; }, { once: true });
-  // Never leave the spinner up with no explanation: report errors, formats iPhones can't play,
-  // and sources that haven't started after 20 seconds.
+    </media-player>`;
+  const vs = $("#vs");
+  // use Kumo's pinned hls.js instead of letting Vidstack fetch its own copy
+  vs.addEventListener("provider-change", e => { if (e.detail?.type === "hls" && window.Hls) e.detail.library = window.Hls; });
+  vs.src = type ? { src, type } : src;
+
   const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const badFormat = /\.(mkv|avi|wmv|flv)(\?|$)/i.test(s.url) && (isIOS || /^((?!chrome|android).)*safari/i.test(navigator.userAgent));
-  const fail = msg => {
-    clearTimeout(stallTimer);
-    $("#pvSpin").hidden = true;
-    stage.querySelector(".err")?.remove();
-    stage.insertAdjacentHTML("beforeend", `<div class="err">${msg}</div>`);
-  };
-  let stallTimer = setTimeout(() => { if (!v.readyState) fail(badFormat ? "This source is an MKV or similar file, which Safari on iPhone can't play. Pick another source." : "This source isn't loading. Pick another one, or try again later."); }, 20000);
-  v.addEventListener("loadedmetadata", () => { clearTimeout(stallTimer); stage.querySelector(".err")?.remove(); });
-  v.addEventListener("error", () => {
-    if (hls) return;
-    fail(badFormat ? "This source is an MKV or similar file, which Safari on iPhone can't play. Pick another source." : "This source wouldn't play. Pick another one.");
-  });
-  hls?.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) fail("This stream wouldn't play. Pick another source."); });
+  const badFormat = !s.ytId && /\.(mkv|avi|wmv|flv)(\?|$)/i.test(s.url) && (isIOS || /^((?!chrome|android).)*safari/i.test(navigator.userAgent));
+  const fail = msg => { clearTimeout(stallTimer); stage.querySelector(".err")?.remove(); stage.insertAdjacentHTML("beforeend", `<div class="err">${msg}</div>`); };
+  let started = false;
+  let stallTimer = setTimeout(() => { if (!started) fail(badFormat ? "This source is an MKV or similar file, which Safari on iPhone can't play. Pick another source." : "This source isn't loading. Pick another one, or try again later."); }, 20000);
+  vs.addEventListener("loaded-metadata", () => { started = true; clearTimeout(stallTimer); stage.querySelector(".err")?.remove(); });
+  vs.addEventListener("error", () => fail(badFormat ? "This source is an MKV or similar file, which Safari on iPhone can't play. Pick another source." : "This source wouldn't play. Pick another one."));
+  if (s.ytId) return; // trailers: no progress, intro or next-episode handling
 
-  // controls visibility
-  const show = () => { host.classList.remove("idle"); clearTimeout(hideTimer); if (!v.paused && $("#pvMenu").hidden) hideTimer = setTimeout(() => host.classList.add("idle"), 3000); };
-  const toggleUI = () => host.classList.contains("idle") ? show() : (!v.paused && host.classList.add("idle"));
-  const flash = txt => { const f = $("#pvFlash"); f.textContent = txt; f.hidden = false; f.style.animation = "none"; void f.offsetWidth; f.style.animation = ""; clearTimeout(flash.t); flash.t = setTimeout(() => f.hidden = true, 600); };
-  const skip = d => { v.currentTime = Math.min(Math.max(0, v.currentTime + d), (v.duration || 1e9) - 0.5); flash(d > 0 ? `+${d}s` : `${d}s`); show(); };
-  const togglePlay = () => { v.paused ? v.play() : v.pause(); show(); };
+  // resume, speed and progress
+  vs.addEventListener("can-play", () => {
+    vs.playbackRate = prefs.speed;
+    const prev = progress[info.key];
+    if (prev?.t && prev.d && prev.t / prev.d < 0.92) vs.currentTime = prev.t;
+  }, { once: true });
+  vs.addEventListener("rate-change", () => { if (vs.playbackRate && vs.playbackRate !== prefs.speed) { prefs.speed = vs.playbackRate; store.set("playerPrefs", prefs); } });
+  const record = () => { if (vs.duration) saveProgress(info.key, { t: vs.currentTime, d: vs.duration, route: info.route, title: info.title, poster: info.poster, label: info.short }); };
+  saveTimer = setInterval(record, 5000);
+  vs.addEventListener("pause", record);
+  current.record = record;
 
-  // tap once to show/hide controls, double-tap left/right third to skip 10 s
-  let lastTap = { t: 0, z: null }, tapTimer = null;
-  pv.querySelectorAll("[data-zone]").forEach(z => z.addEventListener("click", () => {
-    const d = +z.dataset.zone, now = Date.now();
-    if (d && lastTap.z === d && now - lastTap.t < 300) { clearTimeout(tapTimer); skip(d); lastTap = { t: 0, z: null }; return; }
-    lastTap = { t: now, z: d };
-    clearTimeout(tapTimer); tapTimer = setTimeout(toggleUI, d ? 260 : 0);
-  }));
-  $("#pvBack").onclick = () => skip(-10);
-  $("#pvFwd").onclick = () => skip(10);
-  $("#pvPlay").onclick = togglePlay;
-  v.addEventListener("play", () => { $("#pvPlay").innerHTML = ICON.pause; $("#pvPlay").setAttribute("aria-label", "Pause"); show(); });
-  v.addEventListener("pause", () => { $("#pvPlay").innerHTML = ICON.play; $("#pvPlay").setAttribute("aria-label", "Play"); show(); });
-  v.addEventListener("waiting", () => $("#pvSpin").hidden = false);
-  v.addEventListener("playing", () => $("#pvSpin").hidden = true);
-  v.addEventListener("canplay", () => $("#pvSpin").hidden = true);
-  v.addEventListener("loadeddata", () => $("#pvSpin").hidden = true);
-  v.addEventListener("pause", () => $("#pvSpin").hidden = true);
-
-  // seek bar, time, Skip intro and Next episode visibility
-  let seeking = false, introUsed = false;
-  const seek = $("#pvSeek");
-  seek.addEventListener("input", () => { seeking = true; if (v.duration) $("#pvTime").textContent = fmt(seek.value / 1000 * v.duration); show(); });
-  seek.addEventListener("change", () => { if (v.duration) v.currentTime = seek.value / 1000 * v.duration; seeking = false; });
-  v.addEventListener("timeupdate", () => {
-    const d = v.duration || 0, t = v.currentTime;
-    if (!seeking && d) { seek.value = Math.round(t / d * 1000); $("#pvTime").textContent = fmt(t); seek.style.setProperty("--p", (t / d * 100) + "%"); }
-    $("#pvDur").textContent = fmt(d);
+  // Skip intro (85 s, a typical anime opening) and Next episode
+  let introUsed = false;
+  const skip = d => { vs.currentTime = Math.min(Math.max(0, vs.currentTime + d), (vs.duration || 1e9) - 0.5); };
+  vs.addEventListener("time-update", () => {
+    const d = vs.duration || 0, t = vs.currentTime;
     const inIntro = !introUsed && d > 600 && t > 3 && t < 180;
     if (inIntro && prefs.autoSkip) { introUsed = true; skip(85); }
     $("#pvIntro").hidden = !inIntro || prefs.autoSkip;
@@ -718,95 +657,33 @@ function play(s, info, addonKey, mount) {
   });
   $("#pvIntro").onclick = () => { introUsed = true; skip(85); };
   $("#pvNext").onclick = () => goNext();
-
-  // auto-play the next episode when this one ends
-  v.addEventListener("ended", () => {
+  vs.addEventListener("ended", () => {
     record();
-    if (!info.next || !prefs.autoNext) return show();
+    if (!info.next || !prefs.autoNext) return;
     let n = 5;
     const box = $("#pvCount");
     const draw = () => box.innerHTML = `<div>${esc(info.next.short)} in <b>${n}</b></div><div class="pv-count-btns"><button class="pv-pill solid" id="pvNow">Play now</button><button class="pv-pill" id="pvCancel">Cancel</button></div>`;
     draw(); box.hidden = false;
     countTimer = setInterval(() => { n--; if (n <= 0) { clearInterval(countTimer); goNext(); } else draw(); }, 1000);
-    box.onclick = e => { if (e.target.id === "pvNow") { clearInterval(countTimer); goNext(); } if (e.target.id === "pvCancel") { clearInterval(countTimer); box.hidden = true; show(); } };
+    box.onclick = e => { if (e.target.id === "pvNow") { clearInterval(countTimer); goNext(); } if (e.target.id === "pvCancel") { clearInterval(countTimer); box.hidden = true; } };
   });
-  if ($("#pvAuto")) $("#pvAuto").onclick = e => { prefs.autoNext = !prefs.autoNext; store.set("playerPrefs", prefs); e.currentTarget.textContent = `Auto-play ${prefs.autoNext ? "on" : "off"}`; e.currentTarget.setAttribute("aria-pressed", prefs.autoNext); };
 
-  // speed and subtitle menus
-  const menu = $("#pvMenu");
-  const openMenu = (html, onPick) => { menu.innerHTML = html; menu.hidden = false; show(); menu.onclick = e => { const b = e.target.closest("[data-v]"); if (b) { onPick(b.dataset.v); menu.hidden = true; show(); } }; };
-  $("#pvSpeed").onclick = e => {
-    e.stopPropagation();
-    if (!menu.hidden) { menu.hidden = true; return show(); }
-    openMenu(`<div class="pv-menu-h">Speed</div>` + SPEEDS.map(x => `<button data-v="${x}" aria-pressed="${x === prefs.speed}">${x === 1 ? "Normal" : x + "×"}</button>`).join(""), x => {
-      prefs.speed = +x; v.playbackRate = prefs.speed; store.set("playerPrefs", prefs); $("#pvSpeed").textContent = `${prefs.speed}×`;
+  // Subtitles from the stream and from subtitle add-ons; turn on the last language picked
+  const addSubs = list => {
+    list.slice(0, 30).forEach((x, i) => {
+      const fmt = /\.vtt(\?|$)/i.test(x.url) ? "vtt" : /\.ass|\.ssa/i.test(x.url) ? "ass" : "srt";
+      vs.textTracks.add({ id: `kumo-${i}`, src: x.url, kind: "subtitles", label: `${LANGS[x.lang] || x.lang || "Subtitles"}${x.from && x.from !== "stream" ? " · " + x.from : ""}`, language: (x.lang || "und").slice(0, 3), type: fmt });
     });
+    if (prefs.subLang && prefs.subLang !== "off") {
+      const want = LANGS[prefs.subLang] || prefs.subLang;
+      const t = [...vs.textTracks].find(t => t.language === prefs.subLang || (LANGS[t.language] || t.language) === want);
+      if (t) t.mode = "showing";
+    }
   };
-  let subs = [], subsLoaded = false;
-  const embedded = () => [...v.textTracks].filter(t => !t.label.startsWith("kumo:"));
-  const setSub = async val => {
-    [...v.textTracks].forEach(t => t.mode = "disabled");
-    $("#pvCC").classList.toggle("on", val !== "off");
-    if (val === "off") { prefs.subLang = "off"; return store.set("playerPrefs", prefs); }
-    if (val.startsWith("e:")) { const t = embedded()[+val.slice(2)]; if (t) { t.mode = "showing"; prefs.subLang = t.language || prefs.subLang; } return store.set("playerPrefs", prefs); }
-    const sub = subs[+val];
-    try {
-      let track = [...v.querySelectorAll("track")].find(t => t.dataset.src === sub.url);
-      if (!track) {
-        track = document.createElement("track");
-        track.kind = "subtitles"; track.label = "kumo:" + (LANGS[sub.lang] || sub.lang || "Subtitles"); track.srclang = (sub.lang || "und").slice(0, 3);
-        track.dataset.src = sub.url; track.src = await subTrackUrl(sub.url);
-        v.appendChild(track);
-      }
-      setTimeout(() => { [...v.textTracks].forEach(t => t.mode = t.label === track.label && t === track.track ? "showing" : "disabled"); track.track.mode = "showing"; }, 50);
-      prefs.subLang = sub.lang; store.set("playerPrefs", prefs);
-    } catch { toast("Couldn't load those subtitles. Try another."); $("#pvCC").classList.remove("on"); }
-  };
-  gatherSubs(s, info).then(list => {
-    subs = list; subsLoaded = true;
-    if (prefs.subLang && prefs.subLang !== "off") { const i = subs.findIndex(x => x.lang === prefs.subLang || LANGS[x.lang] === LANGS[prefs.subLang]); if (i >= 0) setSub(String(i)); }
-  });
-  $("#pvCC").onclick = e => {
-    e.stopPropagation();
-    if (!menu.hidden) { menu.hidden = true; return show(); }
-    const emb = embedded();
-    const items = [`<button data-v="off">Off</button>`]
-      .concat(emb.map((t, i) => `<button data-v="e:${i}" aria-pressed="${t.mode === "showing"}">${esc(t.label || LANGS[t.language] || t.language || "Track " + (i + 1))}</button>`))
-      .concat(subs.map((x, i) => `<button data-v="${i}">${esc(LANGS[x.lang] || x.lang || "Subtitles")} <small>${esc(x.from)}</small></button>`));
-    openMenu(`<div class="pv-menu-h">Subtitles</div>` + items.join("") + (subsLoaded ? (items.length === 1 ? `<p class="pv-menu-note">No subtitles found for this source.</p>` : "") : `<p class="pv-menu-note">Looking for subtitles…</p>`), setSub);
-  };
+  vs.addEventListener("text-track-change", e => { const t = e.detail; prefs.subLang = t ? t.language : "off"; store.set("playerPrefs", prefs); });
+  customElements.whenDefined("media-player").then(() => gatherSubs(s, info)).then(addSubs).catch(() => {});
 
-  $("#pvFull").onclick = () => {
-    const el = host;
-    if (document.fullscreenElement) return document.exitFullscreen();
-    if (el.requestFullscreen) el.requestFullscreen().catch(() => v.webkitEnterFullscreen?.());
-    else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();
-  };
-  pv.addEventListener("mousemove", show);
-
-  const record = () => { if (v.duration) saveProgress(info.key, { t: v.currentTime, d: v.duration, route: info.route, title: info.title, poster: info.poster, label: info.short }); };
-  saveTimer = setInterval(record, 5000);
-  v.addEventListener("pause", record);
-  current.record = record;
-  current.keys = e => {
-    if (e.target.closest("input, select, textarea") && e.target.id !== "pvSeek") return;
-    if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
-    else if (e.key === "ArrowLeft") skip(-10);
-    else if (e.key === "ArrowRight") skip(10);
-    else if (e.key === "f") $("#pvFull").click();
-    else if (e.key === "n" && info.next) goNext();
-  };
-  show();
-  // Start playing. iPhones often refuse to start a video that wasn't tapped; then hide the
-  // spinner and leave the big play button up so one tap starts it.
-  const p = v.play();
-  if (p) p.catch(err => {
-    if (err?.name !== "NotAllowedError") return;
-    $("#pvSpin").hidden = true;
-    $("#pvPlay").innerHTML = ICON.play; $("#pvPlay").setAttribute("aria-label", "Play");
-    host.classList.remove("idle"); clearTimeout(hideTimer);
-    flash("Tap ▶ to start");
-  });
+  current.keys = e => { if (e.key === "n" && info.next && !e.target.closest("input, select, textarea")) goNext(); };
 }
 
 // Play the next episode with a source from the same add-on if possible, else the first playable one
