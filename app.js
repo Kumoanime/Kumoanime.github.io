@@ -47,21 +47,27 @@ function currentSeason() {
   return { season: ["WINTER", "WINTER", "SPRING", "SPRING", "SPRING", "SUMMER", "SUMMER", "SUMMER", "FALL", "FALL", "FALL", "WINTER"][mo], year: mo === 11 ? d.getFullYear() + 1 : d.getFullYear() };
 }
 
-// AniList (MAL id) -> Kitsu id, which anime add-ons use for stream ids
-async function kitsuId(malId) {
-  if (!malId) return null;
-  const cache = store.get("kitsu", {});
-  if (cache[malId]) return cache[malId];
-  for (const host of ["https://kitsu.app", "https://kitsu.io"]) {
-    try {
-      const r = await fetch(`${host}/api/edge/mappings?filter[externalSite]=myanimelist/anime&filter[externalId]=${malId}&include=item`, { headers: { Accept: "application/vnd.api+json" } });
-      if (!r.ok) continue;
-      const j = await r.json();
-      const id = j.data?.[0]?.relationships?.item?.data?.id;
-      if (id) { cache[malId] = id; store.set("kitsu", cache); return id; }
-    } catch {}
+// AniList id -> the ids add-ons use (Kitsu, IMDb + season, MAL, TMDB), via the ARM mapping
+// service, with Kitsu's own API as a fallback for the Kitsu id. Cached per show.
+async function showIds(media) {
+  const cache = store.get("ids", {});
+  if (cache[media.id]) return cache[media.id];
+  let ids = { anilist: media.id, mal: media.idMal };
+  try {
+    const r = await fetch(`https://arm.haglund.dev/api/v2/ids?source=anilist&id=${media.id}`);
+    if (r.ok) { const j = await r.json(); ids = { ...ids, kitsu: j.kitsu, imdb: j.imdb, imdbSeason: j["thetvdb-season"] || j["themoviedb-season"], tmdb: j.themoviedb, mal: j.myanimelist || media.idMal }; }
+  } catch {}
+  if (!ids.kitsu && media.idMal) {
+    for (const host of ["https://kitsu.app", "https://kitsu.io"]) {
+      try {
+        const r = await fetch(`${host}/api/edge/mappings?filter[externalSite]=myanimelist/anime&filter[externalId]=${media.idMal}&include=item`, { headers: { Accept: "application/vnd.api+json" } });
+        const id = r.ok && (await r.json()).data?.[0]?.relationships?.item?.data?.id;
+        if (id) { ids.kitsu = id; break; }
+      } catch {}
+    }
   }
-  return null;
+  if (ids.kitsu || ids.imdb) { cache[media.id] = ids; store.set("ids", cache); }
+  return ids;
 }
 
 // ---------- add-ons ----------
@@ -302,26 +308,36 @@ function nextEpisode(route, count) {
 }
 
 async function fetchAniStreams(ctx, ep, isMovie) {
-  const kid = await kitsuId(ctx.media.idMal);
-  // Kitsu ids first: most anime add-ons use them, and add-ons without idPrefixes get the first id
-  const ids = [];
-  if (kid) ids.push(isMovie ? `kitsu:${kid}` : `kitsu:${kid}:${ep}`);
-  if (ctx.media.idMal) ids.push(isMovie ? `mal:${ctx.media.idMal}` : `mal:${ctx.media.idMal}:${ep}`);
-  ids.push(`anilist:${ctx.media.id}:${ep}`);
-  const jobs = [];
+  const x = await showIds(ctx.media);
+  // candidate ids in the order add-ons most often expect them; each has the type to ask with
+  const cands = [];
+  if (x.kitsu) cands.push({ id: isMovie ? `kitsu:${x.kitsu}` : `kitsu:${x.kitsu}:${ep}`, anime: true });
+  if (x.imdb) cands.push({ id: isMovie ? x.imdb : `${x.imdb}:${x.imdbSeason || 1}:${ep}` });
+  if (x.mal) cands.push({ id: isMovie ? `mal:${x.mal}` : `mal:${x.mal}:${ep}`, anime: true });
+  if (x.tmdb) cands.push({ id: isMovie ? `tmdb:${x.tmdb}` : `tmdb:${x.tmdb}:${x.imdbSeason || 1}:${ep}` });
+  cands.push({ id: `anilist:${ctx.media.id}:${ep}`, anime: true });
+  const ids = cands.map(c => c.id);
+  const jobs = [], report = [];
   for (const a of allAddons().filter(a => a.enabled)) {
-    const spec = resourceSpec(a.manifest, "stream"); if (!spec) continue;
-    const type = isMovie ? "movie" : spec.types.includes("anime") ? "anime" : "series";
-    const sid = ids.find(i => handles(a, "stream", i));
-    if (!sid) continue;
-    jobs.push(call(a, "stream", type, sid, ctx).then(s => ({ a, streams: s || [] }), () => ({ a, failed: true })));
+    const spec = resourceSpec(a.manifest, "stream");
+    if (!spec) { report.push({ a, why: "doesn't provide episodes (it may only add catalogues or subtitles)" }); continue; }
+    const c = cands.find(c => handles(a, "stream", c.id));
+    if (!c) { report.push({ a, why: `only accepts ${(spec.idPrefixes || []).join(", ") || "unknown"} ids, which Kumo couldn't find for this show` }); continue; }
+    const type = isMovie ? "movie" : c.anime && spec.types.includes("anime") ? "anime" : "series";
+    jobs.push(call(a, "stream", type, c.id, ctx).then(st => {
+      st = st || [];
+      if (!st.length) report.push({ a, why: "answered but had nothing for this episode" });
+      else if (!st.some(z => z.url || z.ytId || z.externalUrl)) report.push({ a, why: "only has torrent sources, which browsers can't play" });
+      return { a, streams: st };
+    }, e => { report.push({ a, why: /^\d+$/.test(e.message) ? `returned an error (${e.message})` : "didn't respond. It may be offline, or it blocks apps on other websites" }); return { a, failed: true }; }));
   }
   const label = isMovie ? "Movie" : `Episode ${ep}`;
   const info = {
     ...ctx, key: `${ctx.route}:${ep}`, label: `${ctx.title} · ${label}`, short: label, ep, subIds: ids, subType: isMovie ? "movie" : "series",
     next: !isMovie && ep < ctx.count ? { short: `Episode ${ep + 1}`, page: `#/watch/${ctx.media.id}/${ep + 1}`, watch: `#/watch/${ctx.media.id}/${ep + 1}`, get: () => fetchAniStreams(ctx, ep + 1, false) } : null,
   };
-  return { results: await Promise.all(jobs), info };
+  const results = await Promise.all(jobs);
+  return { results, info, report };
 }
 
 function metaRoute(a, type, id) { return `#/m/${encodeURIComponent(a.key)}/${encodeURIComponent(type)}/${encodeURIComponent(id)}`; }
@@ -471,7 +487,7 @@ async function viewWatch(id, ep) {
   if ($("#wtPrev")) $("#wtPrev").onclick = () => { autoStartOnce = true; location.hash = `#/watch/${id}/${ep - 1}`; };
   if ($("#wtNext")) $("#wtNext").onclick = () => { autoStartOnce = true; location.hash = `#/watch/${id}/${ep + 1}`; };
 
-  const { results, info } = await fetchAniStreams(ctx, ep, isMovie);
+  const { results, info, report } = await fetchAniStreams(ctx, ep, isMovie);
   if (location.hash !== here) return;
   const rows = [];
   for (const r of results) for (const st of r.streams) rows.push({ a: r.a, s: st, audio: audioOf(st) });
@@ -483,7 +499,7 @@ async function viewWatch(id, ep) {
     return list.length ? `<div class="wt-group"><div class="wt-group-h"><span class="wt-badge">${icon}</span>${label}</div><div class="wt-grid">${list.map(r =>
       `<button class="wt-src" data-i="${r.i}" ${playable(r.s) || r.s.externalUrl ? "" : "disabled"}><span class="dot">▶</span><span class="nm">${esc((r.s.name || r.a.manifest.name).split("\n")[0])}</span><small>${esc(r.a.manifest.name)}${kind(r.s) ? " · " + kind(r.s) : ""}</small></button>`).join("")}</div></div>` : "";
   }).join("") : `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet. Try again later or add another add-on." : `You haven't installed any add-ons. <a href="#/addons">Open Add-ons</a> to add one.`}</div>`;
-  if (failed.length) $("#wtSources").insertAdjacentHTML("beforeend", `<p class="note">No answer from: ${failed.map(esc).join(", ")}.</p>`);
+  if (report.length) $("#wtSources").insertAdjacentHTML("beforeend", `<details class="wt-report"${rows.some(r => playable(r.s)) ? "" : " open"}><summary>Add-on status (${report.length})</summary><ul>${report.map(r => `<li><b>${esc(r.a.manifest.name)}</b> ${esc(r.why)}.</li>`).join("")}</ul></details>`);
 
   const start = i => {
     const r = rows[i];
