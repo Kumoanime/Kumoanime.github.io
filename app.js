@@ -6,85 +6,192 @@ const $ = s => document.querySelector(s);
 const app = $("#app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const stripHtml = s => String(s ?? "").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").replace(/\n{3,}/g, "\n\n").trim();
+const idle = fn => { const ric = window.requestIdleCallback; if (ric) ric(() => fn(), { timeout: 1800 }); else setTimeout(fn, 400); };
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // ---------- storage ----------
 const store = {
   get(k, d) { try { const v = localStorage.getItem("kumo." + k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem("kumo." + k, JSON.stringify(v)); } catch {} },
 };
-let addons = store.get("addons", []);      // [{url, manifest, enabled}]
-let repos = store.get("repos", []);        // [{url, name, entries:[{url,name,description}]}]
-let watchlist = store.get("watchlist", {}); // route -> {route,title,poster,added}
-let removed = store.get("removed", {});     // route -> time removed, so a sync doesn't bring it back
-let progress = store.get("progress", {});   // videoKey -> {t,d,updated,route,title,poster,label,ep}
+const forgetKey = k => { try { localStorage.removeItem("kumo." + k); } catch {} };
+let addons = store.get("addons", []);
+let repos = store.get("repos", []);
+let watchlist = store.get("watchlist", {});
+let removed = store.get("removed", {});
+let progress = store.get("progress", {});
 let builtinOff = store.get("builtinOff", {});
-let rdSettings = store.get("rd", {}); // {token, proxy} — token is optional; never committed
+let rdSettings = store.get("rd", {});
 const saveAddons = () => store.set("addons", addons);
 const saveRd = patch => { rdSettings = { ...rdSettings, ...patch }; store.set("rd", rdSettings); };
 
 let tt;
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; t.style.display = ""; clearTimeout(tt); tt = setTimeout(() => { t.hidden = true; t.style.display = "none"; }, 2600); }
 
+// ---------- response cache (memory + IndexedDB, stale-while-revalidate) ----------
+const TTL = { list: 15 * 60 * 1000, search: 5 * 60 * 1000, media: 6 * 60 * 60 * 1000, catalog: 30 * 60 * 1000, meta: 12 * 60 * 60 * 1000, stream: 5 * 60 * 1000, subs: 12 * 60 * 60 * 1000, notes: 10 * 60 * 1000 };
+const mem = new Map();
+const inflight = new Map();
+let dbPromise = null;
+function openDb() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise(resolve => {
+    if (!("indexedDB" in window)) { resolve(null); return; }
+    const req = indexedDB.open("kumo-cache", 1);
+    req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains("kv")) req.result.createObjectStore("kv"); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  });
+  return dbPromise;
+}
+function idbGet(key) {
+  return openDb().then(db => new Promise(resolve => {
+    if (!db) { resolve(null); return; }
+    try {
+      const r = db.transaction("kv", "readonly").objectStore("kv").get(key);
+      r.onsuccess = () => resolve(r.result || null);
+      r.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  }));
+}
+function idbPut(key, rec) {
+  openDb().then(db => { if (!db) return; try { db.transaction("kv", "readwrite").objectStore("kv").put(rec, key); } catch {} }).catch(() => {});
+}
+function cacheLevel(rec, ttl, factor) {
+  if (!rec || rec.data === undefined || rec.at == null) return 0;
+  const age = Date.now() - rec.at;
+  if (age < ttl) return 2;
+  if (age < ttl * factor) return 1;
+  return 0;
+}
+function cached(key, ttl, fetcher, opts = {}) {
+  const factor = opts.staleFactor || 8;
+  const hit = mem.get(key);
+  const hitLevel = cacheLevel(hit, ttl, factor);
+  if (hitLevel === 2) return Promise.resolve(hit.data);
+  if (hitLevel === 1) { start(false); return Promise.resolve(hit.data); }
+  return idbGet(key).then(stored => {
+    const storedLevel = cacheLevel(stored, ttl, factor);
+    if (!storedLevel) return start(true);
+    mem.set(key, stored);
+    if (storedLevel === 1) start(false);
+    return stored.data;
+  });
+  function start(wait) {
+    let p = inflight.get(key);
+    if (!p) {
+      p = Promise.resolve().then(fetcher).then(data => {
+        const rec = { data, at: Date.now() };
+        mem.set(key, rec);
+        idbPut(key, rec);
+        if (!wait && opts.onUpdate) opts.onUpdate(data);
+        return data;
+      }).catch(err => {
+        if (!wait && mem.get(key)) return mem.get(key).data;
+        throw err;
+      }).finally(() => { if (inflight.get(key) === p) inflight.delete(key); });
+      inflight.set(key, p);
+    }
+    return wait ? p : undefined;
+  }
+}
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+function fetchTimeout(url, ms, init) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...(init || {}), signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
 // ---------- AniList ----------
-const MEDIA_FIELDS = `id idMal title{romaji english} coverImage{large color} bannerImage format status episodes
+const MEDIA_FIELDS = `id idMal title{romaji english} coverImage{medium large color} bannerImage format status episodes
   season seasonYear averageScore genres nextAiringEpisode{episode airingAt} trailer{id site}`;
-async function anilist(query, variables = {}) {
-  const r = await fetch("https://graphql.anilist.co", {
+async function anilistRaw(query, variables) {
+  const r = await fetchTimeout("https://graphql.anilist.co", 12000, {
     method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ query, variables }),
   });
   if (!r.ok) throw new Error("AniList " + r.status);
-  return (await r.json()).data;
+  const json = await r.json();
+  if (!json.data) throw new Error("AniList");
+  return json.data;
 }
-const listCache = {};
-async function anilistList(key, vars) {
-  if (listCache[key]) return listCache[key];
-  const d = await anilist(`query($sort:[MediaSort],$season:MediaSeason,$year:Int,$status:MediaStatus,$search:String){
-    Page(perPage:30){media(type:ANIME,isAdult:false,sort:$sort,season:$season,seasonYear:$year,status:$status,search:$search){${MEDIA_FIELDS}}}}`, vars);
-  return (listCache[key] = d.Page.media);
+function anilist(query, variables = {}, opts = {}) {
+  const key = opts.key || ("al:" + hashStr(query + "\0" + JSON.stringify(variables)));
+  return cached(key, opts.ttl || TTL.list, () => anilistRaw(query, variables), opts);
+}
+const LIST_QUERY = `query($sort:[MediaSort],$season:MediaSeason,$year:Int,$status:MediaStatus,$search:String){
+  Page(perPage:30){media(type:ANIME,isAdult:false,sort:$sort,season:$season,seasonYear:$year,status:$status,search:$search){${MEDIA_FIELDS}}}}`;
+function anilistList(key, vars, onUpdate) {
+  return anilist(LIST_QUERY, vars, { key: "list:" + key, ttl: TTL.list, staleFactor: 24, onUpdate: onUpdate ? d => onUpdate(d.Page.media) : undefined }).then(d => d.Page.media);
 }
 const titleOf = m => m.title.english || m.title.romaji;
 function currentSeason() {
   const d = new Date(), mo = d.getMonth();
   return { season: ["WINTER", "WINTER", "SPRING", "SPRING", "SPRING", "SUMMER", "SUMMER", "SUMMER", "FALL", "FALL", "FALL", "WINTER"][mo], year: mo === 11 ? d.getFullYear() + 1 : d.getFullYear() };
 }
-
-// AniList id -> the ids add-ons use (Kitsu, IMDb + season, MAL, TMDB), via the ARM mapping
-// service, with Kitsu's own API as a fallback for the Kitsu id. Cached per show.
+const idsFlight = new Map();
 async function showIds(media) {
   const cache = store.get("ids", {});
   if (cache[media.id]) return cache[media.id];
-  let ids = { anilist: media.id, mal: media.idMal };
-  try {
-    const r = await fetch(`https://arm.haglund.dev/api/v2/ids?source=anilist&id=${media.id}`);
-    if (r.ok) { const j = await r.json(); ids = { ...ids, kitsu: j.kitsu, imdb: j.imdb, imdbSeason: j["thetvdb-season"] || j["themoviedb-season"], tmdb: j.themoviedb, mal: j.myanimelist || media.idMal }; }
-  } catch {}
-  if (!ids.kitsu && media.idMal) {
-    for (const host of ["https://kitsu.app", "https://kitsu.io"]) {
-      try {
-        const r = await fetch(`${host}/api/edge/mappings?filter[externalSite]=myanimelist/anime&filter[externalId]=${media.idMal}&include=item`, { headers: { Accept: "application/vnd.api+json" } });
-        const id = r.ok && (await r.json()).data?.[0]?.relationships?.item?.data?.id;
-        if (id) { ids.kitsu = id; break; }
-      } catch {}
+  if (idsFlight.has(media.id)) return idsFlight.get(media.id);
+  const p = (async () => {
+    let ids = { anilist: media.id, mal: media.idMal };
+    try {
+      const r = await fetchTimeout(`https://arm.haglund.dev/api/v2/ids?source=anilist&id=${media.id}`, 6000);
+      if (r.ok) { const j = await r.json(); ids = { ...ids, kitsu: j.kitsu, imdb: j.imdb, imdbSeason: j["thetvdb-season"] || j["themoviedb-season"], tmdb: j.themoviedb, mal: j.myanimelist || media.idMal }; }
+    } catch {}
+    if (!ids.kitsu && media.idMal) {
+      const found = await Promise.all(["https://kitsu.app", "https://kitsu.io"].map(async host => {
+        try {
+          const r = await fetchTimeout(`${host}/api/edge/mappings?filter[externalSite]=myanimelist/anime&filter[externalId]=${media.idMal}&include=item`, 6000, { headers: { Accept: "application/vnd.api+json" } });
+          return r.ok && (await r.json()).data?.[0]?.relationships?.item?.data?.id;
+        } catch { return null; }
+      }));
+      ids.kitsu = found.find(Boolean) || ids.kitsu;
     }
-  }
-  if (ids.kitsu || ids.imdb) { cache[media.id] = ids; store.set("ids", cache); }
-  return ids;
+    if (ids.kitsu || ids.imdb) { cache[media.id] = ids; store.set("ids", cache); }
+    return ids;
+  })().finally(() => idsFlight.delete(media.id));
+  idsFlight.set(media.id, p);
+  return p;
+}
+function rememberMedia(m) {
+  if (!m?.id) return;
+  const id = String(m.id);
+  const prev = store.get("mediaIdx", []);
+  const idx = [id, ...prev.filter(x => x !== id)].slice(0, 30);
+  store.set("mediaIdx", idx);
+  store.set("media." + id, { at: Date.now(), data: m });
+  for (const old of prev) if (!idx.includes(old)) forgetKey("media." + old);
+  const hero = m.bannerImage || m.coverImage?.large || "";
+  if (hero) { try { localStorage.setItem("kumo.hero." + id, hero); } catch {} }
+}
+function recallMedia(id) {
+  const rec = store.get("media." + id, null);
+  return rec?.data ? rec : null;
+}
+function getMedia(id) {
+  const key = "media:" + id;
+  if (!mem.has(key)) { const rec = recallMedia(id); if (rec) mem.set(key, rec); }
+  return cached(key, TTL.media, () => anilistRaw(`query($id:Int){Media(id:$id,type:ANIME){${MEDIA_FIELDS} description(asHtml:false) studios(isMain:true){nodes{name}}}}`, { id: +id }).then(d => {
+    if (!d.Media) throw new Error("AniList");
+    rememberMedia(d.Media);
+    return d.Media;
+  }), { staleFactor: 28 });
 }
 
 // ---------- add-ons ----------
-// Built-ins use the same shape as remote add-ons, with local handlers. None ship today:
-// trailers have their own button on the show page.
 const BUILTINS = [];
-
 function allAddons() {
   return [
     ...BUILTINS.map(b => ({ ...b, builtin: true, enabled: !builtinOff[b.key] })),
     ...addons.map(a => ({ ...a, key: a.url })),
   ];
 }
-// Canonical form of an add-on's manifest link for duplicate checks: same host, path and
-// ?settings (in any order) means the same install; different settings are different installs.
 function addonKey(u) {
   try {
     const x = new URL(normaliseUrl(u));
@@ -94,7 +201,6 @@ function addonKey(u) {
     return `${x.origin}${path.replace(/\/manifest\.json$/i, "/manifest.json")}${x.search}`;
   } catch { return u; }
 }
-// Build a resource URL from an add-on's manifest URL, keeping any ?query the add-on uses for its settings
 function addonUrl(manifestUrl, path) {
   const u = new URL(manifestUrl);
   u.pathname = u.pathname.replace(/\/manifest\.json$/i, "").replace(/\/+$/, "") + "/" + path;
@@ -117,24 +223,28 @@ function handles(a, name, id) {
   if (!spec) return false;
   return !spec.idPrefixes || spec.idPrefixes.some(p => id.startsWith(p));
 }
-async function call(a, resource, type, id, ctx) {
-  if (a.builtin) return a[resource]?.(type, id, ctx);
-  const r = await fetch(addonUrl(a.url, `${resource}/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`));
-  if (!r.ok) throw Object.assign(new Error(`${a.manifest.name}: HTTP ${r.status} for ${resource}`), { status: r.status });
-  const j = await r.json();
-  switch (resource) {
-    case "catalog": return j.metas ?? [];
-    case "meta": return j.meta ?? null;
-    case "subtitles": return j.subtitles ?? [];
-    case "stream": return j.streams ?? [];
-    default: throw new Error(`Unsupported resource: ${resource}`);
-  }
+function call(a, resource, type, id, ctx) {
+  if (a.builtin) return Promise.resolve(a[resource]?.(type, id, ctx));
+  const url = addonUrl(a.url, `${resource}/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`);
+  const ttl = resource === "stream" ? TTL.stream : resource === "catalog" ? TTL.catalog : resource === "meta" ? TTL.meta : TTL.subs;
+  return cached("addon:" + resource + ":" + url, ttl, async () => {
+    const r = await fetchTimeout(url, resource === "stream" ? 8000 : 12000);
+    if (!r.ok) throw Object.assign(new Error(`${a.manifest.name}: HTTP ${r.status} for ${resource}`), { status: r.status });
+    const j = await r.json();
+    switch (resource) {
+      case "catalog": return j.metas ?? [];
+      case "meta": return j.meta ?? null;
+      case "subtitles": return j.subtitles ?? [];
+      case "stream": return j.streams ?? [];
+      default: throw new Error(`Unsupported resource: ${resource}`);
+    }
+  }, { staleFactor: resource === "stream" ? 6 : 12 });
 }
 async function installAddon(url, quiet) {
   url = normaliseUrl(url);
   const manifestUrl = /manifest\.json/i.test(url) ? url : addonUrl(url, "manifest.json");
   if (addons.some(a => addonKey(a.url) === addonKey(manifestUrl))) { if (!quiet) toast("That add-on is already installed"); return false; }
-  const r = await fetch(manifestUrl);
+  const r = await fetchTimeout(manifestUrl, 12000);
   if (!r.ok) throw new Error(`The link answered with error ${r.status}`);
   const manifest = await r.json();
   if (!manifest.id || !manifest.resources) throw new Error("That link isn't an add-on manifest");
@@ -143,10 +253,9 @@ async function installAddon(url, quiet) {
   if (!quiet) toast(`Installed ${manifest.name}`);
   return true;
 }
-// Repository: {name, addons:[url | {transportUrl|url, name, description}]} or a plain array of those
 async function addRepo(url) {
   url = normaliseUrl(url);
-  const r = await fetch(url);
+  const r = await fetchTimeout(url, 12000);
   if (!r.ok) throw new Error(`The link answered with error ${r.status}`);
   const j = await r.json();
   const list = Array.isArray(j) ? j : j.addons || j.plugins || [];
@@ -180,64 +289,208 @@ function continueItems() {
   return Object.values(byShow).sort((a, b) => b.updated - a.updated).slice(0, 15);
 }
 
-// ---------- views ----------
-function card(href, title, poster, sub, extra = "", opts = {}) {
-  const watchRoute = opts.watchRoute || href;
+// ---------- artwork ----------
+const lazyIo = new IntersectionObserver(entries => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    const img = e.target;
+    if (img.dataset.srcset) img.srcset = img.dataset.srcset;
+    if (img.dataset.src) img.src = img.dataset.src;
+    img.removeAttribute("data-src");
+    lazyIo.unobserve(img);
+  }
+}, { root: null, rootMargin: "280px 360px" });
+function observeLazy(scope) { scope.querySelectorAll("img[data-src]").forEach(img => lazyIo.observe(img)); }
+function preloadHero(url) {
+  if (!url) return;
+  let link = document.getElementById("hero-preload");
+  if (!link) { link = document.createElement("link"); link.id = "hero-preload"; link.rel = "preload"; link.as = "image"; document.head.appendChild(link); }
+  try { if (link.href && new URL(link.href).href === new URL(url, location.href).href) return; } catch {}
+  link.href = url;
+}
+function card(href, title, poster, sub, extra = "", opt = {}) {
+  let img;
+  if (!poster) img = `<div class="ph">${esc(title)}</div>`;
+  else {
+    const dims = `alt="" width="230" height="320" decoding="async"`;
+    const set = opt.srcset ? ` srcset="${esc(opt.srcset)}" sizes="${opt.sizes || "(max-width: 420px) 46vw, 150px"}"` : "";
+    if (opt.defer) img = `<img ${dims} data-src="${esc(poster)}"${opt.srcset ? ` data-srcset="${esc(opt.srcset)}"` : ""} fetchpriority="low">`;
+    else img = `<img ${dims} src="${esc(poster)}"${set} ${opt.eager ? `fetchpriority="high"` : `loading="lazy" fetchpriority="low"`}>`;
+  }
+  const watchRoute = opt.watchRoute || href;
   const on = !!watchlist[watchRoute];
-  const airId = opts.airId || ((/^#\/a\/(\d+)$/.exec(watchRoute) || [])[1] || "");
-  const air = opts.air != null ? opts.air : (airId ? airForId(airId) : "");
+  const airId = opt.airId || ((/^#\/a\/(\d+)$/.exec(watchRoute) || [])[1] || "");
+  const air = opt.air != null ? opt.air : (airId ? airForId(airId) : "");
   const name = title || "this show";
   const label = on ? `Remove ${name} from Watching` : `Add ${name} to Watching`;
-  return `<div class="card-wrap"><button type="button" class="quick-add${on ? " on" : ""}" data-quick="${esc(watchRoute)}" data-title="${esc(name)}" data-poster="${esc(poster || "")}" aria-pressed="${on ? "true" : "false"}" aria-label="${esc(label)}"><span aria-hidden="true">${on ? "✓" : "+"}</span></button><a class="card" href="${esc(href)}"><div class="cover"${airId ? ` data-air-for="${esc(airId)}"` : ""}>${poster ? `<img src="${esc(poster)}" alt="" loading="lazy" decoding="async">` : `<div class="ph">${esc(title)}</div>`}${air ? `<span class="air-pill">${esc(air)}</span>` : ""}${extra}</div>
-    <div class="t">${esc(title)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</a></div>`;
+  return `<div class="card-wrap"><button type="button" class="quick-add${on ? " on" : ""}" data-quick="${esc(watchRoute)}" data-title="${esc(name)}" data-poster="${esc(poster || "")}" aria-pressed="${on ? "true" : "false"}" aria-label="${esc(label)}"><span aria-hidden="true">${on ? "✓" : "+"}</span></button><a class="card" href="${esc(href)}"><div class="cover"${airId ? ` data-air-for="${esc(airId)}"` : ""}>${img}${air ? `<span class="air-pill">${esc(air)}</span>` : ""}${extra}</div><div class="t">${esc(title)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</a></div>`;
 }
-function continueCard(p, bar) {
-  const airId = (/^#\/a\/(\d+)$/.exec(p.route || "") || [])[1] || "";
-  const extra = bar && p.d ? `<div class="bar-prog" style="width:${Math.min(100, p.t / p.d * 100)}%"></div>` : "";
-  return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId });
-}
-// Ratings: AniList scores are 0–100, shown out of 10; add-on metas may carry imdbRating
 const ratingBadge = r => r ? `<span class="rating" aria-label="Rated ${r} out of 10">★ ${r}</span>` : "";
 const aniRating = m => m.averageScore ? (m.averageScore / 10).toFixed(1) : "";
-const aniCard = m => card(`#/a/${m.id}`, titleOf(m), m.coverImage?.large, [m.seasonYear, m.format?.replace("_", " ")].filter(Boolean).join(" · "), ratingBadge(aniRating(m)), {
-  airId: m.id,
+function aniSrcset(m) {
+  const sm = m.coverImage?.medium, lg = m.coverImage?.large;
+  return sm && lg ? `${sm} 100w, ${lg} 230w` : "";
+}
+const aniCard = (m, i = 0) => card(`#/a/${m.id}`, titleOf(m), m.coverImage?.large || m.coverImage?.medium, [m.seasonYear, m.format?.replace("_", " ")].filter(Boolean).join(" · "), ratingBadge(aniRating(m)), {
+  eager: i === 0, defer: i >= 4, srcset: aniSrcset(m), airId: m.id,
   air: m.nextAiringEpisode ? KumoNotify.airLabel(m.nextAiringEpisode.episode, m.nextAiringEpisode.airingAt, Date.now()) : "",
 });
-const skelRail = () => `<div class="rail">${Array(6).fill(`<div class="card"><div class="cover skel"></div></div>`).join("")}</div>`;
+function snapCard(it, i = 0) {
+  const set = it.posterSm && it.poster ? `${it.posterSm} 100w, ${it.poster} 230w` : "";
+  const airId = it.id || ((/^#\/a\/(\d+)$/.exec(it.href || "") || [])[1] || "");
+  return card(it.href || `#/a/${it.id}`, it.title, it.poster, it.sub, ratingBadge(it.rating), { eager: i === 0, defer: i >= 4, srcset: set, airId });
+}
+function compactMedia(m) {
+  return { id: m.id, title: titleOf(m), poster: m.coverImage?.large || "", posterSm: m.coverImage?.medium || "", sub: [m.seasonYear, m.format?.replace("_", " ")].filter(Boolean).join(" · "), rating: aniRating(m) };
+}
+const skelRail = () => `<div class="rail">${Array.from({ length: 6 }, () => `<div class="card"><div class="cover skel"></div><div class="skel skel-line"></div><div class="skel skel-line" style="width:70%"></div></div>`).join("")}</div>`;
 function section(title, body, note = "") { return `<section class="section"><div class="section-head"><h2>${esc(title)}</h2>${note ? `<small>${esc(note)}</small>` : ""}</div>${body}</section>`; }
-
-async function viewHome() {
-  const cont = continueItems();
-  const s = currentSeason();
-  const rails = [
-    ["trending", "Trending now", { sort: ["TRENDING_DESC"], status: "RELEASING" }],
-    ["season", `${s.season[0] + s.season.slice(1).toLowerCase()} ${s.year}`, { sort: ["POPULARITY_DESC"], season: s.season, year: s.year }],
-    ["top", "All-time favourites", { sort: ["SCORE_DESC"], status: "FINISHED" }],
-  ];
-  const catalogs = allAddons().filter(a => a.enabled && resourceSpec(a.manifest, "catalog"))
-    .flatMap(a => (a.manifest.catalogs || []).filter(c => !(c.extra || []).some(e => e.isRequired) && !(c.extraRequired || []).length).slice(0, 3).map(c => ({ a, c })));
-  app.innerHTML =
-    (cont.length ? section("Continue watching", `<div class="rail">${cont.map(p => continueCard(p, true)).join("")}</div>`) : "") +
-    rails.map(([k, t]) => `<div id="rail-${k}">${section(t, skelRail())}</div>`).join("") +
-    catalogs.map((x, i) => `<div id="cat-${i}">${section(x.c.name || x.c.id, skelRail(), x.a.manifest.name)}</div>`).join("") +
-    (addons.length ? "" : section("Get more from Kumo", `<div class="empty"><h3>Add your first add-on</h3>Add-ons supply the episodes Kumo can play. <a href="#/addons">Open Add-ons</a> to install one by link or browse a repository.</div>`));
-  rails.forEach(async ([k, t, vars]) => {
-    const el = $(`#rail-${k}`); if (!el) return;
-    try { const list = await anilistList(k, vars); rememberMediaAir(list); el.innerHTML = section(t, `<div class="rail">${list.map(aniCard).join("")}</div>`); }
-    catch { el.innerHTML = section(t, `<p class="note">Couldn't reach AniList for show info. Check your connection and reload.</p>`); }
-  });
-  catalogs.forEach(async ({ a, c }, i) => {
-    const el = $(`#cat-${i}`); if (!el) return;
-    try {
-      const metas = (await call(a, "catalog", c.type, c.id)) || [];
-      el.innerHTML = metas.length ? section(c.name || c.id, `<div class="rail">${metas.slice(0, 30).map(m => card(metaRoute(a, m.type, m.id), m.name, m.poster, m.releaseInfo, ratingBadge(m.imdbRating))).join("")}</div>`, a.manifest.name) : "";
-    } catch { el.innerHTML = section(c.name || c.id, `<p class="note">${esc(a.manifest.name)} didn't respond.</p>`, a.manifest.name); }
+function mount() { return app.querySelector(":scope > .view") || app; }
+let hlsPromise = null, playerPromise = null, supabasePromise = null;
+function loadScript(src, asModule) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    if (asModule) s.type = "module";
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Could not load " + src));
+    document.head.appendChild(s);
   });
 }
+function ensurePlayerAssets() {
+  if (!playerPromise) {
+    if (!document.querySelector("link[data-vidstack]")) {
+      for (const href of ["https://cdn.jsdelivr.net/npm/vidstack@1.15.6/player/styles/default/theme.css", "https://cdn.jsdelivr.net/npm/vidstack@1.15.6/player/styles/default/layouts/video.css"]) {
+        const l = document.createElement("link"); l.rel = "stylesheet"; l.href = href; l.dataset.vidstack = "1"; document.head.appendChild(l);
+      }
+    }
+    playerPromise = loadScript("https://cdn.jsdelivr.net/npm/vidstack@1.15.6/cdn/with-layouts/vidstack.js", true).then(() => customElements.whenDefined("media-player"));
+  }
+  return playerPromise;
+}
+function ensureHls() {
+  if (document.createElement("video").canPlayType("application/vnd.apple.mpegurl")) return Promise.resolve();
+  if (!hlsPromise) hlsPromise = loadScript("https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js", false);
+  return hlsPromise;
+}
+function ensureSupabase() {
+  if (sb) return Promise.resolve(sb);
+  if (!supabasePromise) supabasePromise = loadScript("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js", false).then(() => { initSupabase(); return sb; }).catch(err => { supabasePromise = null; throw err; });
+  return supabasePromise;
+}
 
-// ---------- search + filter ----------
-// One page: search bar on top, filter dropdowns under it, results below. Filters are
-// kept in memory so going into a show and back keeps them.
+// ---------- views ----------
+const page = {};
+let searchTimer = 0, searchGen = 0;
+function continueHtml() {
+  const cont = continueItems();
+  if (!cont.length) return "";
+  return `<div id="sec-continue">${section("Continue watching", `<div class="rail">${cont.map((p, i) => {
+    const airId = (/^#\/a\/(\d+)$/.exec(p.route || "") || [])[1] || "";
+    const extra = p.d ? `<div class="bar-prog" style="width:${Math.min(100, p.t / p.d * 100)}%"></div>` : "";
+    return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId, eager: i === 0, defer: i >= 4 });
+  }).join("")}</div>`)}</div>`;
+}
+function homeRoot() {
+  if (activeKey === "#/" && app.firstElementChild) return app.firstElementChild;
+  return viewNodes.get("#/")?.el || null;
+}
+function refreshContinue() {
+  const root = homeRoot();
+  if (!root) return;
+  const html = continueHtml();
+  const sec = root.querySelector("#sec-continue");
+  if (!html) { sec?.remove(); return; }
+  if (!sec) root.insertAdjacentHTML("afterbegin", html);
+  else sec.outerHTML = html;
+  observeLazy(root);
+}
+function saveHomeSnap(patch) {
+  const prev = store.get("homeSnap", {}) || {};
+  const rails = { ...(prev.rails || {}), ...(patch.rails || {}) };
+  const cats = patch.cats || prev.cats || [];
+  const lcp = continueItems()[0]?.poster || rails.trending?.[0]?.poster || prev.lcp || "";
+  store.set("homeSnap", { at: Date.now(), lcp, rails, cats });
+}
+function enabledCatalogs() {
+  return allAddons().filter(a => a.enabled && resourceSpec(a.manifest, "catalog"))
+    .flatMap(a => (a.manifest.catalogs || []).filter(c => !(c.extra || []).some(e => e.isRequired) && !(c.extraRequired || []).length).slice(0, 3).map(c => ({ a, c, key: a.key + ":" + c.type + ":" + c.id })));
+}
+function fillRail(root, k, title, note, list) {
+  const el = root.querySelector("#rail-" + k);
+  if (!el || !list) return;
+  rememberMediaAir(list);
+  const sig = list.map(m => m.id).join(",");
+  saveHomeSnap({ rails: { [k]: list.map(compactMedia) } });
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+  el.innerHTML = section(title, `<div class="rail">${list.map((m, i) => aniCard(m, i)).join("")}</div>`, note);
+  observeLazy(el);
+  if (k === "trending" && list[0]?.coverImage?.large && !continueItems().length) preloadHero(list[0].coverImage.large);
+}
+function homeShell(root, snap) {
+  const s = currentSeason();
+  const seasonTitle = `${s.season[0] + s.season.slice(1).toLowerCase()} ${s.year}`;
+  const specs = [["trending", "Trending now", ""], ["season", seasonTitle, ""], ["top", "All-time favourites", ""]];
+  const rails = specs.map(([k, t]) => {
+    const items = snap?.rails?.[k];
+    const sig = items?.length ? items.map(it => it.id).join(",") : "";
+    const body = items?.length ? `<div class="rail">${items.map((it, i) => snapCard(it, i)).join("")}</div>` : skelRail();
+    return `<div id="rail-${k}" data-sig="${sig}">${section(t, body)}</div>`;
+  }).join("");
+  const catalogs = enabledCatalogs();
+  const cats = catalogs.map((x, i) => {
+    const snapCat = snap?.cats?.find(c => c.key === x.key);
+    const body = snapCat?.items?.length ? `<div class="rail">${snapCat.items.map((it, n) => snapCard(it, n)).join("")}</div>` : skelRail();
+    return `<div id="cat-${i}" data-key="${esc(x.key)}" data-sig="${snapCat?.items?.map(it => it.href).join(",") || ""}">${section(x.c.name || x.c.id, body, x.a.manifest.name)}</div>`;
+  }).join("");
+  const empty = addons.length ? "" : `<div id="home-empty">${section("Get more from Kumo", `<div class="empty"><h3>Add your first add-on</h3>Add-ons supply the episodes Kumo can play. <a href="#/addons">Open Add-ons</a> to install one by link or browse a repository.</div>`)}</div>`;
+  root.innerHTML = continueHtml() + rails + cats + empty;
+  observeLazy(root);
+  if (snap?.lcp) preloadHero(snap.lcp);
+}
+async function viewHome(root, gen) {
+  const snap = store.get("homeSnap", null);
+  homeShell(root, snap);
+  const s = currentSeason();
+  const rails = [
+    ["trending", "Trending now", "", { sort: ["TRENDING_DESC"], status: "RELEASING" }],
+    ["season", `${s.season[0] + s.season.slice(1).toLowerCase()} ${s.year}`, "", { sort: ["POPULARITY_DESC"], season: s.season, year: s.year }],
+    ["top", "All-time favourites", "", { sort: ["SCORE_DESC"], status: "FINISHED" }],
+  ];
+  await Promise.all(rails.map(async ([k, t, note, vars]) => {
+    try {
+      const list = await anilistList(k, vars, fresh => { if (root.dataset.gen === String(gen)) fillRail(root, k, t, note, fresh); });
+      if (root.dataset.gen !== String(gen)) return;
+      fillRail(root, k, t, note, list);
+    } catch {
+      const el = root.querySelector("#rail-" + k);
+      if (el && root.dataset.gen === String(gen) && !el.dataset.sig) el.innerHTML = section(t, `<p class="note">Couldn't reach AniList for show info. Check your connection and reload.</p>`);
+    }
+  }));
+  const catalogs = enabledCatalogs();
+  const catSnap = [];
+  await Promise.all(catalogs.map(async (x, i) => {
+    const el = root.querySelector("#cat-" + i);
+    if (!el) return;
+    try {
+      const metas = (await call(x.a, "catalog", x.c.type, x.c.id)) || [];
+      if (root.dataset.gen !== String(gen)) return;
+      const items = metas.slice(0, 30).map(m => ({ href: metaRoute(x.a, m.type, m.id), title: m.name, poster: m.poster || "", sub: m.releaseInfo || "", rating: m.imdbRating || "" }));
+      const sig = items.map(it => it.href).join(",");
+      if (items.length) catSnap.push({ key: x.key, title: x.c.name || x.c.id, note: x.a.manifest.name, items: items.slice(0, 20) });
+      if (!items.length) { el.innerHTML = ""; return; }
+      if (el.dataset.sig === sig) return;
+      el.dataset.sig = sig;
+      el.innerHTML = section(x.c.name || x.c.id, `<div class="rail">${items.map((it, n) => snapCard(it, n)).join("")}</div>`, x.a.manifest.name);
+      observeLazy(el);
+    } catch {
+      if (root.dataset.gen === String(gen)) el.innerHTML = section(x.c.name || x.c.id, `<p class="note">${esc(x.a.manifest.name)} didn't respond.</p>`, x.a.manifest.name);
+    }
+  }));
+  if (catSnap.length) saveHomeSnap({ cats: catSnap });
+}
+
 const GENRES = ["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"];
 const FILTERS = {
   genre: ["Genre", GENRES.map(g => [g, g])],
@@ -252,8 +505,10 @@ const FILTERS = {
   sort: ["Sort: popular", [["TRENDING_DESC", "Sort: trending"], ["SCORE_DESC", "Sort: top rated"], ["START_DATE_DESC", "Sort: newest"], ["TITLE_ROMAJI", "Sort: A–Z"]]],
   exclude: ["Show everything", [["watching", "Hide my Watching"]]],
 };
-let filters = { q: "" }, searchPage = 1, searchItems = [], searchMore = false, searchGen = 0;
-
+let filters = { q: "" }, searchPage = 1, searchItems = [], searchMore = false;
+let focusSearchOnOpen = false;
+const SEARCH_QUERY = `query($page:Int,$search:String,$genre:[String],$season:MediaSeason,$year:Int,$format:[MediaFormat],$status:MediaStatus,$country:CountryCode,$score:Int,$source:MediaSource,$epsMin:Int,$epsMax:Int,$notIn:[Int],$sort:[MediaSort]){
+  Page(page:$page,perPage:30){pageInfo{hasNextPage}media(type:ANIME,isAdult:false,search:$search,genre_in:$genre,season:$season,seasonYear:$year,format_in:$format,status:$status,countryOfOrigin:$country,averageScore_greater:$score,source:$source,episodes_greater:$epsMin,episodes_lesser:$epsMax,id_not_in:$notIn,sort:$sort){${MEDIA_FIELDS}}}}`;
 function filterVars() {
   const v = { page: searchPage };
   if (filters.q) v.search = filters.q;
@@ -270,29 +525,46 @@ function filterVars() {
   v.sort = [filters.sort || (filters.q ? "SEARCH_MATCH" : "POPULARITY_DESC")];
   return v;
 }
+function updateClearBtn() {
+  const slot = page.searchRoot?.querySelector(".filter-actions");
+  if (!slot) return;
+  const active = Object.keys(FILTERS).filter(k => filters[k]).length;
+  const btn = slot.querySelector("#clearFilters");
+  if (!active) { btn?.remove(); return; }
+  const label = `Clear ${active} filter${active > 1 ? "s" : ""}`;
+  if (btn) { btn.textContent = label; return; }
+  slot.insertAdjacentHTML("beforeend", `<button class="btn ghost" type="button" id="clearFilters">${label}</button>`);
+  slot.querySelector("#clearFilters").onclick = () => { filters = { q: filters.q }; page.searchRoot?.querySelectorAll("[data-f]").forEach(sel => { sel.value = ""; sel.classList.remove("set"); }); updateClearBtn(); runSearch(); };
+}
 async function runSearch(append) {
-  const box = $("#results"); if (!box) return;
+  const root = page.searchRoot;
+  const box = root?.querySelector("#results");
+  if (!box) return;
+  if (!append) { searchPage = 1; searchItems = []; }
   const gen = ++searchGen;
-  if (!append) { searchPage = 1; searchItems = []; box.innerHTML = `<div class="grid">${Array(8).fill(`<div class="card"><div class="cover skel"></div></div>`).join("")}</div>`; }
+  const vars = filterVars();
+  const key = "search:" + JSON.stringify(vars);
+  if (!append) {
+    const known = mem.get(key);
+    if (!known) setTimeout(() => { if (gen === searchGen && !box.querySelector(".card") && !box.querySelector(".empty")) box.innerHTML = `<div class="grid">${Array.from({ length: 8 }, () => `<div class="card"><div class="cover skel"></div><div class="skel skel-line"></div></div>`).join("")}</div>`; }, 140);
+  }
   try {
-    const d = await anilist(`query($page:Int,$search:String,$genre:[String],$season:MediaSeason,$year:Int,$format:[MediaFormat],$status:MediaStatus,$country:CountryCode,$score:Int,$source:MediaSource,$epsMin:Int,$epsMax:Int,$notIn:[Int],$sort:[MediaSort]){
-      Page(page:$page,perPage:30){pageInfo{hasNextPage}media(type:ANIME,isAdult:false,search:$search,genre_in:$genre,season:$season,seasonYear:$year,format_in:$format,status:$status,countryOfOrigin:$country,averageScore_greater:$score,source:$source,episodes_greater:$epsMin,episodes_lesser:$epsMax,id_not_in:$notIn,sort:$sort){${MEDIA_FIELDS}}}}`, filterVars());
-    if (gen !== searchGen || !$("#results")) return;
+    const d = await anilist(SEARCH_QUERY, vars, { key, ttl: TTL.search, staleFactor: 12 });
+    if (gen !== searchGen) return;
     searchItems = searchItems.concat(d.Page.media);
     rememberMediaAir(d.Page.media);
     searchMore = d.Page.pageInfo.hasNextPage;
     box.innerHTML = searchItems.length
-      ? `<div class="grid">${searchItems.map(aniCard).join("")}</div>${searchMore ? `<div class="more"><button class="btn ghost" id="loadMore">Load more</button></div>` : ""}`
+      ? `<div class="grid">${searchItems.map((m, i) => aniCard(m, append ? 99 : i)).join("")}</div>${searchMore ? `<div class="more"><button class="btn ghost" type="button" id="loadMore">Load more</button></div>` : ""}`
       : `<div class="empty"><h3>Nothing matches</h3>Try fewer filters, or the show's Japanese or English title.</div>`;
-    if ($("#loadMore")) $("#loadMore").onclick = e => { e.target.disabled = true; searchPage++; runSearch(true); };
-  } catch {
-    if (gen !== searchGen || !$("#results")) return;
-    box.innerHTML = `<div class="empty"><h3>Search isn't working</h3>Couldn't reach AniList. Check your connection and try again.</div>`;
-  }
+    observeLazy(box);
+    page.onMore = () => { searchPage++; runSearch(true); };
+  } catch { if (gen === searchGen) box.innerHTML = `<div class="empty"><h3>Search isn't working</h3>Couldn't reach AniList. Check your connection and try again.</div>`; }
 }
-function viewSearch(focus) {
+function viewSearch(root, focus) {
+  page.searchRoot = root;
   const active = Object.keys(FILTERS).filter(k => filters[k]).length;
-  app.innerHTML = `
+  root.innerHTML = `
     <h1 class="page-title">Search</h1>
     <form id="filterForm" class="filter-form">
       <input id="q" type="search" class="filter-search" placeholder="Search anime" autocomplete="off" aria-label="Search anime" enterkeyhint="search" value="${esc(filters.q)}">
@@ -303,28 +575,21 @@ function viewSearch(focus) {
       <div class="filter-actions"><button class="btn" type="submit">Filter</button>${active ? `<button class="btn ghost" type="button" id="clearFilters">Clear ${active} filter${active > 1 ? "s" : ""}</button>` : ""}</div>
     </form>
     <div id="results"></div>`;
-  const form = $("#filterForm");
-  form.onsubmit = e => {
-    e.preventDefault();
-    filters.q = $("#q").value.trim();
-    form.querySelectorAll("[data-f]").forEach(sel => filters[sel.dataset.f] = sel.value);
-    $("#q").blur();
-    viewSearch();
-  };
+  const form = root.querySelector("#filterForm");
+  const readFilters = () => { filters.q = root.querySelector("#q").value.trim(); form.querySelectorAll("[data-f]").forEach(sel => filters[sel.dataset.f] = sel.value); updateClearBtn(); };
+  form.onsubmit = e => { e.preventDefault(); clearTimeout(searchTimer); readFilters(); root.querySelector("#q").blur(); runSearch(); };
   form.querySelectorAll("[data-f]").forEach(sel => sel.onchange = () => sel.classList.toggle("set", !!sel.value));
-  if ($("#clearFilters")) $("#clearFilters").onclick = () => { filters = { q: filters.q }; viewSearch(); };
-  // Refocusing on every visit pops the iPhone keyboard when you come back
-  // from a show. Only the Search tab itself should open the field.
-  if (focus && focusSearchOnOpen && !matchMedia("(pointer: coarse)").matches) $("#q").focus();
+  root.querySelector("#q").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { if (!page.searchRoot?.querySelector("#q")) return; const next = page.searchRoot.querySelector("#q").value.trim(); if (next === filters.q) return; filters.q = next; runSearch(); }, 300); });
+  const clear = root.querySelector("#clearFilters");
+  if (clear) clear.onclick = () => { filters = { q: filters.q }; form.querySelectorAll("[data-f]").forEach(sel => { sel.value = ""; sel.classList.remove("set"); }); updateClearBtn(); runSearch(); };
+  // A coarse-pointer device pops the keyboard whenever this field is focused.
+  // Only the Search tab itself should do that; coming back from a show should not.
+  if (focus && (focusSearchOnOpen || !matchMedia("(pointer: coarse)").matches)) root.querySelector("#q").focus();
   focusSearchOnOpen = false;
   runSearch();
 }
 
-const mediaCache = {};
-async function getMedia(id) {
-  if (!mediaCache[id]) mediaCache[id] = (await anilist(`query($id:Int){Media(id:$id,type:ANIME){${MEDIA_FIELDS} description(asHtml:false) studios(isMain:true){nodes{name}}}}`, { id: +id })).Media;
-  return mediaCache[id];
-}
+function mediaSig(m) { return [m.id, m.episodes || "", m.nextAiringEpisode?.episode || "", m.bannerImage || "", (m.description || "").length, m.averageScore || ""].join(":"); }
 function episodeCount(m) {
   if (m.format === "MOVIE") return m.status === "NOT_YET_RELEASED" ? 0 : 1;
   // Next episode 1 means nothing has aired. A missing count used to become
@@ -334,47 +599,66 @@ function episodeCount(m) {
   if (m.episodes) return m.episodes;
   return 12;
 }
-async function viewAnime(id) {
-  app.innerHTML = `<div class="hero skel" style="height:260px"></div>`;
-  let m;
-  try { m = await getMedia(id); }
-  catch { app.innerHTML = `<div class="empty"><h3>Couldn't load this show</h3>AniList didn't respond. Go back and try again.</div>`; return; }
-  const route = `#/a/${id}`, title = titleOf(m);
-  const isMovie = m.format === "MOVIE";
-  const count = episodeCount(m);
-  const inList = !!watchlist[route];
-  const studio = m.studios?.nodes?.[0]?.name;
-  const next = m.nextAiringEpisode ? `Ep ${m.nextAiringEpisode.episode} airs ${new Date(m.nextAiringEpisode.airingAt * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}` : "";
-  const air = m.nextAiringEpisode ? KumoNotify.airLabel(m.nextAiringEpisode.episode, m.nextAiringEpisode.airingAt, Date.now()) : "";
-  rememberMediaAir([m]);
-  app.innerHTML = `
-    <div class="hero">${m.bannerImage ? `<div class="banner" style="background-image:url('${esc(m.bannerImage)}')"></div>` : `<div class="banner"></div>`}
-      <div class="hero-body"><div class="cover" data-air-for="${esc(m.id)}">${m.coverImage?.large ? `<img src="${esc(m.coverImage.large)}" alt="">` : ""}${air ? `<span class="air-pill">${esc(air)}</span>` : ""}</div>
-        <div><h1>${esc(title)}</h1>${m.averageScore ? `<div class="score"><b>★ ${aniRating(m)}</b><span>/10 on AniList</span></div>` : ""}<div class="facts">${[studio, m.seasonYear, m.format?.replace("_", " "), m.episodes ? m.episodes + " eps" : ""].filter(Boolean).map(esc).join(" · ")}</div></div></div></div>
-    <p class="desc">${esc(stripHtml(m.description)).replace(/\n/g, "<br>")}</p>
-    <div class="actions">
-      ${count > 0 ? `<button class="btn" id="playNext" type="button">▶ ${isMovie ? "Play" : "Play episode " + nextEpisode(route, count)}</button>` : `<button class="btn" type="button" disabled>Not aired yet</button>`}
-      ${m.trailer?.site === "youtube" ? `<button class="btn ghost" id="playTrailer" type="button">🎬 Trailer</button>` : ""}
-      <button class="btn ghost" id="toggleList" type="button" data-watch="${esc(route)}">${inList ? "✓ Watching" : "+ Watching"}</button>
-    </div>
-    ${isMovie ? "" : section("Episodes", count ? `<div class="eps">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
-      const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
-      return `<button class="ep${pct > 92 ? " seen" : ""}" type="button" data-ep="${n}">${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</button>`;
-    }).join("")}</div>` : `<p class="note">No episodes have aired yet.</p>`, next)}`;
-  $("#toggleList").onclick = () => { toggleWatch(route, title, m.coverImage?.large); };
-  if ($("#playNext")) $("#playNext").onclick = () => { autoStartOnce = true; location.hash = `#/watch/${id}/${isMovie ? 1 : nextEpisode(route, count)}`; };
-  if ($("#playTrailer")) $("#playTrailer").onclick = () => play({ ytId: m.trailer.id }, { label: `${title} · Trailer`, key: `${route}:trailer` });
-  app.querySelectorAll("[data-ep]").forEach(b => b.onclick = () => { location.hash = `#/watch/${id}/${b.dataset.ep}`; });
-}
 function nextEpisode(route, count) {
   let last = 0;
   for (const [k, p] of Object.entries(progress)) if (k.startsWith(route + ":")) { const n = +k.split(":").pop(); if (p.d && p.t / p.d > 0.92) last = Math.max(last, n); else if (p.t > 0) last = Math.max(last, n - 1); }
   return Math.min(last + 1, count);
 }
+function animeSkeleton() {
+  return `<div class="hero" aria-hidden="true"><div class="banner skel"></div><div class="hero-body"><div class="cover skel"></div><div style="flex:1"><div class="skel skel-line" style="height:28px;width:70%"></div><div class="skel skel-line" style="width:40%"></div></div></div></div><div class="skel skel-line"></div><div class="skel skel-line" style="width:92%"></div><div class="skel skel-line" style="width:80%"></div><div class="actions"><div class="skel" style="width:180px;height:44px;border-radius:12px"></div></div>`;
+}
+function paintAnime(root, m) {
+  const sig = mediaSig(m);
+  if (root.dataset.sig === sig && root.querySelector("#playNext")) { refreshProgressMarks(root); return; }
+  root.dataset.sig = sig;
+  const id = m.id, route = `#/a/${id}`, title = titleOf(m);
+  const isMovie = m.format === "MOVIE", count = episodeCount(m), inList = !!watchlist[route];
+  const studio = m.studios?.nodes?.[0]?.name;
+  const next = m.nextAiringEpisode ? `Ep ${m.nextAiringEpisode.episode} airs ${new Date(m.nextAiringEpisode.airingAt * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}` : "";
+  if (m.bannerImage) preloadHero(m.bannerImage);
+  else if (m.coverImage?.large) preloadHero(m.coverImage.large);
+  rememberMedia(m);
+  rememberMediaAir([m]);
+  const air = m.nextAiringEpisode ? KumoNotify.airLabel(m.nextAiringEpisode.episode, m.nextAiringEpisode.airingAt, Date.now()) : "";
+  const coverImg = m.coverImage?.large || m.coverImage?.medium || "";
+  root.innerHTML = `
+    <div class="hero">${m.bannerImage ? `<div class="banner"><img src="${esc(m.bannerImage)}" alt="" fetchpriority="high" decoding="async" width="1900" height="400"></div>` : `<div class="banner"></div>`}
+      <div class="hero-body"><div class="cover" data-air-for="${esc(m.id)}">${coverImg ? `<img src="${esc(coverImg)}" alt="" decoding="async" fetchpriority="high" width="230" height="320">` : ""}${air ? `<span class="air-pill">${esc(air)}</span>` : ""}</div>
+        <div><h1>${esc(title)}</h1>${m.averageScore ? `<div class="score"><b>★ ${aniRating(m)}</b><span>/10 on AniList</span></div>` : ""}<div class="facts">${[studio, m.seasonYear, m.format?.replace("_", " "), m.episodes ? m.episodes + " eps" : ""].filter(Boolean).map(esc).join(" · ")}</div></div></div></div>
+    <p class="desc">${esc(stripHtml(m.description)).replace(/\n/g, "<br>")}</p>
+    <div class="actions">
+      ${count > 0 ? `<button class="btn" type="button" id="playNext">▶ ${isMovie ? "Play" : "Play episode " + nextEpisode(route, count)}</button>` : `<button class="btn" type="button" disabled>Not aired yet</button>`}
+      ${m.trailer?.site === "youtube" ? `<button class="btn ghost" type="button" id="playTrailer">🎬 Trailer</button>` : ""}
+      <button class="btn ghost" type="button" id="toggleList" data-watch="${esc(route)}">${inList ? "✓ Watching" : "+ Watching"}</button>
+    </div>
+    ${isMovie ? "" : section("Episodes", count ? `<div class="eps" data-route="${esc(route)}">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
+      const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
+      return `<a class="ep${pct > 92 ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}">${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
+    }).join("")}</div>` : `<p class="note">No episodes have aired yet.</p>`, next)}`;
+  page.toggleList = () => {
+    toggleWatch(route, title, m.coverImage?.large);
+    const b = root.querySelector("#toggleList");
+    if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching";
+    refreshContinue();
+  };
+  page.playNext = () => { autoStartOnce = true; goHash(`#/watch/${id}/${isMovie ? 1 : nextEpisode(route, count)}`); };
+  page.playTrailer = m.trailer?.site === "youtube" ? () => play({ ytId: m.trailer.id }, { label: `${title} · Trailer`, key: `${route}:trailer` }) : null;
+}
+async function viewAnime(id, root, gen) {
+  const local = recallMedia(id);
+  if (local?.data) paintAnime(root, local.data);
+  else root.innerHTML = animeSkeleton();
+  try {
+    const m = await getMedia(id);
+    if (root.dataset.gen !== String(gen)) return;
+    paintAnime(root, m);
+  } catch {
+    if (!local && root.dataset.gen === String(gen)) root.innerHTML = `<div class="empty"><h3>Couldn't load this show</h3>AniList didn't respond. Go back and try again.</div>`;
+  }
+}
 
-async function fetchAniStreams(ctx, ep, isMovie) {
+async function fetchAniStreams(ctx, ep, isMovie, onUpdate) {
   const x = await showIds(ctx.media);
-  // candidate ids in the order add-ons most often expect them; each has the type to ask with
   const cands = [];
   if (x.kitsu) cands.push({ id: isMovie ? `kitsu:${x.kitsu}` : `kitsu:${x.kitsu}:${ep}`, anime: true });
   if (x.imdb) cands.push({ id: isMovie ? x.imdb : `${x.imdb}:${x.imdbSeason || 1}:${ep}` });
@@ -386,8 +670,6 @@ async function fetchAniStreams(ctx, ep, isMovie) {
   for (const a of allAddons().filter(a => a.enabled)) {
     const spec = resourceSpec(a.manifest, "stream");
     if (!spec) { report.push({ a, why: "doesn't provide episodes (it may only add catalogues or subtitles)" }); continue; }
-    // Try each id format the add-on accepts (up to 3) until one returns sources. A network
-    // failure means the add-on itself is unreachable, so other ids won't help.
     const usable = cands.filter(c => handles(a, "stream", c.id)).slice(0, 3);
     if (!usable.length) { report.push({ a, why: `only accepts ${(spec.idPrefixes || []).join(", ") || "unknown"} ids, which Kumo couldn't find for this show` }); continue; }
     jobs.push((async () => {
@@ -405,7 +687,8 @@ async function fetchAniStreams(ctx, ep, isMovie) {
           tried.push(`${fmt}: no results`);
         } catch (e) {
           console.warn(`[Kumo] ${a.manifest.name} failed for ${c.id}:`, e);
-          if (!e.status) { report.push({ a, why: "didn't respond. It may be offline, or it blocks apps on other websites" }); return { a, failed: true }; }
+          const why = e?.name === "AbortError" ? "took too long, so Kumo moved on" : "didn't respond. It may be offline, or it blocks apps on other websites";
+          if (!e.status) { report.push({ a, why }); return { a, failed: true }; }
           tried.push(`${fmt}: error ${e.status}`);
         }
       }
@@ -418,63 +701,75 @@ async function fetchAniStreams(ctx, ep, isMovie) {
     ...ctx, key: `${ctx.route}:${ep}`, label: `${ctx.title} · ${label}`, short: label, ep, subIds: ids, subType: isMovie ? "movie" : "series",
     next: !isMovie && ep < ctx.count ? { short: `Episode ${ep + 1}`, page: `#/watch/${ctx.media.id}/${ep + 1}`, watch: `#/watch/${ctx.media.id}/${ep + 1}`, get: () => fetchAniStreams(ctx, ep + 1, false) } : null,
   };
-  const results = await Promise.all(jobs);
-  return { results, info, report };
+  const slots = new Array(jobs.length);
+  let done = 0;
+  const emit = () => onUpdate?.({ results: slots.filter(Boolean), info, report: report.slice(), pending: jobs.length - done });
+  await Promise.all(jobs.map((job, i) => job.then(r => { slots[i] = r; done++; emit(); }, () => { done++; emit(); })));
+  return { results: slots.filter(Boolean), info, report };
 }
 
 function metaRoute(a, type, id) { return `#/m/${encodeURIComponent(a.key)}/${encodeURIComponent(type)}/${encodeURIComponent(id)}`; }
-async function viewMeta(key, type, id) {
+function renderStreams(box, results, info) {
+  const rows = [];
+  for (const r of results) for (const s of r.streams || []) rows.push({ a: r.a, s });
+  page.streamRows = rows;
+  page.info = info;
+  const failed = results.filter(r => r.failed).map(r => r.a.manifest.name);
+  const kind = s => KumoPlayback.kindLabel(s) || "Unknown";
+  box.innerHTML = `<div class="streams"><h3>${esc(info.short)}</h3>
+    ${rows.length ? rows.map((x, i) => `<button class="stream" type="button" data-i="${i}"><div><b>${esc(x.s.name || x.a.manifest.name)}</b><span>${esc(x.s.title || x.s.description || "")}</span></div><span class="kind">${kind(x.s)}</span></button>`).join("")
+      : `<p class="note">None of your add-ons have a source for this yet. ${addons.length ? "" : "Install an add-on under Add-ons to get episode sources."}</p>`}
+    ${failed.length ? `<p class="note">No answer from: ${failed.map(esc).join(", ")}.</p>` : ""}</div>`;
+}
+async function viewMeta(key, type, id, root) {
   const a = allAddons().find(x => x.key === key);
-  if (!a) { app.innerHTML = `<div class="empty"><h3>Add-on not installed</h3>This page came from an add-on that's been removed.</div>`; return; }
-  app.innerHTML = `<div class="hero skel" style="height:260px"></div>`;
+  if (!a) { root.innerHTML = `<div class="empty"><h3>Add-on not installed</h3>This page came from an add-on that's been removed.</div>`; return; }
+  root.innerHTML = animeSkeleton();
   let m;
   try { m = handles(a, "meta", id) ? await call(a, "meta", type, id) : null; } catch {}
-  if (!m) { app.innerHTML = `<div class="empty"><h3>Couldn't load this title</h3>${esc(a.manifest.name)} didn't send its details.</div>`; return; }
+  if (root !== mount() && !root.isConnected) return;
+  if (!m) { root.innerHTML = `<div class="empty"><h3>Couldn't load this title</h3>${esc(a.manifest.name)} didn't send its details.</div>`; return; }
   const route = metaRoute(a, type, id);
   const videos = (m.videos || []).slice().sort((x, y) => (x.season || 0) - (y.season || 0) || (x.episode || 0) - (y.episode || 0));
   const inList = !!watchlist[route];
-  app.innerHTML = `
-    <div class="hero">${m.background ? `<div class="banner" style="background-image:url('${esc(m.background)}')"></div>` : `<div class="banner"></div>`}
-      <div class="hero-body"><div class="cover">${m.poster ? `<img src="${esc(m.poster)}" alt="">` : ""}</div>
+  if (m.background) preloadHero(m.background);
+  root.innerHTML = `
+    <div class="hero">${m.background ? `<div class="banner"><img src="${esc(m.background)}" alt="" fetchpriority="high" decoding="async" width="1900" height="400"></div>` : `<div class="banner"></div>`}
+      <div class="hero-body"><div class="cover">${m.poster ? `<img src="${esc(m.poster)}" alt="" decoding="async" fetchpriority="high" width="230" height="320">` : ""}</div>
         <div><h1>${esc(m.name)}</h1>${m.imdbRating ? `<div class="score"><b>★ ${esc(m.imdbRating)}</b><span>/10</span></div>` : ""}<div class="facts">${[m.releaseInfo, (m.genres || []).slice(0, 3).join(", "), a.manifest.name].filter(Boolean).map(esc).join(" · ")}</div></div></div></div>
     ${m.description ? `<p class="desc">${esc(m.description)}</p>` : ""}
-    <div class="actions">${videos.length ? "" : `<button class="btn" id="playMain" type="button">▶ Play</button>`}<button class="btn ghost" id="toggleList" type="button" data-watch="${esc(route)}">${inList ? "✓ Watching" : "+ Watching"}</button></div>
-    ${videos.length ? section("Episodes", `<div class="vlist">${videos.map(v => `<button class="vrow" data-vid="${esc(v.id)}">${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" loading="lazy">` : ""}<div><b>${esc(v.title || v.name || "Episode " + v.episode)}</b><span>${[v.season != null ? "S" + v.season : "", v.episode != null ? "E" + v.episode : ""].join(" ")}</span></div></button>`).join("")}</div>`) : ""}
+    <div class="actions">${videos.length ? "" : `<button class="btn" type="button" id="playMain">▶ Play</button>`}<button class="btn ghost" type="button" id="toggleList" data-watch="${esc(route)}">${inList ? "✓ Watching" : "+ Watching"}</button></div>
+    ${videos.length ? section("Episodes", `<div class="vlist">${videos.map(v => `<button class="vrow" type="button" data-vid="${esc(v.id)}">${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" width="120" height="68" loading="lazy" decoding="async">` : ""}<div><b>${esc(v.title || v.name || "Episode " + v.episode)}</b><span>${[v.season != null ? "S" + v.season : "", v.episode != null ? "E" + v.episode : ""].join(" ")}</span></div></button>`).join("")}</div>`) : ""}
     <div id="streams"></div>`;
   const ctx = { route, title: m.name, poster: m.poster };
-  $("#toggleList").onclick = () => { toggleWatch(route, m.name, m.poster); };
+  page.toggleList = () => { toggleWatch(route, m.name, m.poster); const b = root.querySelector("#toggleList"); if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching"; refreshContinue(); };
   const vLabel = v => v.title || v.name || `Episode ${v.episode}`;
-  const fetchStreams = async i => { // i = index into videos, or -1 for a title without episodes
+  const fetchStreams = async i => {
     const vid = i < 0 ? id : videos[i].id, label = i < 0 ? m.name : vLabel(videos[i]);
-    const results = await Promise.all(allAddons().filter(x => x.enabled && handles(x, "stream", vid))
-      .map(x => call(x, "stream", type, vid, ctx).then(s => ({ a: x, streams: s || [] }), () => ({ a: x, failed: true }))));
+    const targets = allAddons().filter(x => x.enabled && handles(x, "stream", vid));
+    const results = new Array(targets.length);
+    let pending = targets.length;
+    const paint = () => {
+      const box = root.querySelector("#streams");
+      if (!box) return;
+      renderStreams(box, results.filter(Boolean), info);
+    };
     const info = {
       ...ctx, key: `${route}:${vid}`, label: `${m.name}${label === m.name ? "" : " · " + label}`, short: label, subIds: [vid], subType: type,
       next: i >= 0 && i + 1 < videos.length ? { short: vLabel(videos[i + 1]), page: route, get: () => fetchStreams(i + 1) } : null,
     };
-    return { results, info };
+    await Promise.all(targets.map((x, n) => call(x, "stream", type, vid, ctx).then(s => ({ a: x, streams: s || [] }), () => ({ a: x, failed: true })).then(r => { results[n] = r; pending--; paint(); })));
+    return { results: results.filter(Boolean), info, pending };
   };
   const load = async i => {
-    const box = $("#streams");
+    const box = root.querySelector("#streams");
+    if (!box) return;
     box.innerHTML = `<div class="streams"><h3>${esc(i < 0 ? m.name : vLabel(videos[i]))}</h3><p class="muted">Asking your add-ons…</p></div>`;
-    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    const { results, info } = await fetchStreams(i);
-    renderStreams(box, results, info);
+    box.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "nearest" });
+    await fetchStreams(i);
   };
-  $("#playMain") && ($("#playMain").onclick = () => load(-1));
-  app.querySelectorAll("[data-vid]").forEach(b => b.onclick = () => load(videos.findIndex(x => x.id === b.dataset.vid)));
-}
-
-function renderStreams(box, results, info) {
-  const rows = [];
-  for (const r of results) for (const s of r.streams) rows.push({ a: r.a, s });
-  const failed = results.filter(r => r.failed).map(r => r.a.manifest.name);
-  const kind = s => KumoPlayback.kindLabel(s) || "Unknown";
-  box.innerHTML = `<div class="streams"><h3>${esc(info.short)}</h3>
-    ${rows.length ? rows.map((x, i) => `<button class="stream" data-i="${i}"><div><b>${esc(x.s.name || x.a.manifest.name)}</b><span>${esc(x.s.title || x.s.description || "")}</span></div><span class="kind">${kind(x.s)}</span></button>`).join("")
-      : `<p class="note">None of your add-ons have a source for this yet. ${addons.length ? "" : "Install an add-on under Add-ons to get episode sources."}</p>`}
-    ${failed.length ? `<p class="note">No answer from: ${failed.map(esc).join(", ")}.</p>` : ""}</div>`;
-  box.querySelectorAll("[data-i]").forEach(b => b.onclick = () => playFromList(rows, +b.dataset.i, info, null, { explicit: true }));
+  page.playMain = () => load(-1);
+  page.loadVid = vid => load(videos.findIndex(x => x.id === vid));
 }
 
 function toggleWatch(route, title, poster) {
@@ -485,20 +780,19 @@ function toggleWatch(route, title, poster) {
   loadNotes();
   scheduleSync();
 }
-
-function viewList() {
+function viewList(root) {
   const items = Object.values(watchlist).sort((a, b) => b.added - a.added);
   const cont = continueItems();
-  app.innerHTML =
-    section("Watching", items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "")).join("")}</div>` : `<div class="empty"><h3>You're not watching anything yet</h3>Tap <b>+</b> on a poster, or <b>+ Watching</b> on a show. Kumo tells you when a new episode has aired.</div>`) +
-    (cont.length ? section("Recently watched", `<div class="grid">${cont.map(p => continueCard(p)).join("")}</div>`) : "") +
+  root.innerHTML =
+    section("Watching", items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "", "", { defer: false })).join("")}</div>` : `<div class="empty"><h3>You're not watching anything yet</h3>Tap <b>+ Watching</b> on any show to keep it here and get told when new episodes come out.</div>`) +
+    (cont.length ? section("Recently watched", `<div class="grid">${cont.map(p => card(continueHref(p), p.title, p.poster, p.label, "", { watchRoute: p.route, airId: (/^#\/a\/(\d+)$/.exec(p.route || "") || [])[1] || "" })).join("")}</div>`) : "") +
     `<p class="note">Your shows and progress are saved on this device.</p>`;
+  observeLazy(root);
 }
-
-function viewAddons() {
+function viewAddons(root) {
   const all = allAddons();
   const installed = new Set(addons.map(a => addonKey(a.url)));
-  app.innerHTML = `
+  root.innerHTML = `
     <section class="section"><div class="section-head"><h2>Install an add-on</h2></div>
       <p class="note">Paste the link to a Stremio-compatible add-on (it usually ends in <code>manifest.json</code>).</p>
       <form class="field" id="addonForm"><input id="addonUrl" placeholder="https://example.com/manifest.json" inputmode="url" autocomplete="off"><button class="btn">Install</button></form>
@@ -508,17 +802,17 @@ function viewAddons() {
     </section>
     ${rdSection()}
     ${section("Installed", all.map((a, i) => `
-      <div class="addon">${a.manifest.logo ? `<img src="${esc(a.manifest.logo)}" alt="">` : `<div class="logo-ph">${esc((a.manifest.name || "?")[0])}</div>`}
+      <div class="addon">${a.manifest.logo ? `<img src="${esc(a.manifest.logo)}" alt="" width="44" height="44" decoding="async">` : `<div class="logo-ph">${esc((a.manifest.name || "?")[0])}</div>`}
         <div class="info"><b>${esc(a.manifest.name)}</b><p>${esc(a.manifest.description || "")}</p>
           <div class="tags">${a.builtin ? `<span class="tag">Built in</span>` : ""}${(a.manifest.resources || []).map(r => `<span class="tag">${esc(typeof r === "string" ? r : r.name)}</span>`).join("")}<span class="tag">v${esc(a.manifest.version)}</span></div></div>
         <div class="ctrl"><input type="checkbox" class="switch" id="sw-${i}" data-key="${esc(a.key)}" aria-label="Turn ${esc(a.manifest.name)} on or off" ${a.enabled ? "checked" : ""}>
-          ${a.builtin ? "" : `<button class="btn ghost small" data-remove="${esc(a.key)}">Remove</button>`}</div>
+          ${a.builtin ? "" : `<button class="btn ghost small" type="button" data-remove="${esc(a.key)}">Remove</button>`}</div>
       </div>`).join(""), `${all.filter(a => a.enabled).length} on`)}
     ${repos.map(r => section(r.name, r.entries.map(e => {
       const has = installed.has(addonKey(e.url));
       return `<div class="addon"><div class="logo-ph">${esc((e.name || "?")[0])}</div><div class="info"><b>${esc(e.name || e.url)}</b><p>${esc(e.description || e.url)}</p></div>
-        <div class="ctrl">${has ? `<span class="tag on">Installed</span>` : `<button class="btn small" data-install="${esc(e.url)}">Install</button>`}</div></div>`;
-    }).join("") + `<button class="btn ghost small" data-unrepo="${esc(r.url)}">Remove repository</button>`, "Repository")).join("")}`;
+        <div class="ctrl">${has ? `<span class="tag on">Installed</span>` : `<button class="btn small" type="button" data-install="${esc(e.url)}">Install</button>`}</div></div>`;
+    }).join("") + `<button class="btn ghost small" type="button" data-unrepo="${esc(r.url)}">Remove repository</button>`, "Repository")).join("")}`;
 
   $("#rdForm").onsubmit = e => {
     e.preventDefault();
@@ -529,16 +823,16 @@ function viewAddons() {
     rdPlayCache.clear();
     rdCorsBlocked = false;
     toast("Real-Debrid settings saved");
-    viewAddons();
+    viewAddons(mount());
   };
-  if ($("#rdClear")) $("#rdClear").onclick = () => { saveRd({ token: "" }); rdPlayCache.clear(); rdCorsBlocked = false; toast("Forgot the pasted token"); viewAddons(); };
-  const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); viewAddons(); } catch (e) { toast(e.message.includes("fetch") ? "Couldn't reach that link. Check it's https and online." : e.message); btn.disabled = false; } };
+  if ($("#rdClear")) $("#rdClear").onclick = () => { saveRd({ token: "" }); rdPlayCache.clear(); rdCorsBlocked = false; toast("Forgot the pasted token"); viewAddons(mount()); };
+  const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); viewAddons(mount()); } catch (e) { toast(e.message.includes("fetch") ? "Couldn't reach that link. Check it's https and online." : e.message); btn.disabled = false; } };
   $("#addonForm").onsubmit = e => { e.preventDefault(); const v = $("#addonUrl").value; if (v.trim()) busy(e.submitter || e.target.querySelector("button"), () => installAddon(v)); };
   $("#repoForm").onsubmit = e => { e.preventDefault(); const v = $("#repoUrl").value; if (v.trim()) busy(e.submitter || e.target.querySelector("button"), () => addRepo(v)); };
-  app.querySelectorAll("[data-install]").forEach(b => b.onclick = () => busy(b, () => installAddon(b.dataset.install)));
-  app.querySelectorAll("[data-remove]").forEach(b => b.onclick = () => { addons = addons.filter(a => a.url !== b.dataset.remove); saveAddons(); toast("Add-on removed"); viewAddons(); });
-  app.querySelectorAll("[data-unrepo]").forEach(b => b.onclick = () => { repos = repos.filter(r => r.url !== b.dataset.unrepo); store.set("repos", repos); viewAddons(); });
-  app.querySelectorAll(".switch").forEach(sw => sw.onchange = () => {
+  root.querySelectorAll("[data-install]").forEach(b => b.onclick = () => busy(b, () => installAddon(b.dataset.install)));
+  root.querySelectorAll("[data-remove]").forEach(b => b.onclick = () => { addons = addons.filter(a => a.url !== b.dataset.remove); saveAddons(); toast("Add-on removed"); viewAddons(mount()); });
+  root.querySelectorAll("[data-unrepo]").forEach(b => b.onclick = () => { repos = repos.filter(r => r.url !== b.dataset.unrepo); store.set("repos", repos); viewAddons(mount()); });
+  root.querySelectorAll(".switch").forEach(sw => sw.onchange = () => {
     const k = sw.dataset.key;
     if (k.startsWith("builtin:")) { builtinOff[k] = !sw.checked; store.set("builtinOff", builtinOff); }
     else { const a = addons.find(x => x.url === k); if (a) { a.enabled = sw.checked; saveAddons(); } }
@@ -546,27 +840,55 @@ function viewAddons() {
 }
 
 // ---------- watch page ----------
-// Player on the page, toggles and Prev/Next under it, then sources grouped SUB / DUB.
-// Opening an episode asks every add-on straight away and starts the first playable source.
 let autoStartOnce = false;
 const audioOf = s => { const t = `${s.name || ""} ${s.title || ""} ${s.description || ""}`; return /\bdub(bed)?\b|\beng(lish)? ?dub|\bdual\b/i.test(t) ? "dub" : /\bsub(bed|s)?\b|\bsoft ?sub|\bhard ?sub/i.test(t) ? "sub" : "other"; };
-async function viewWatch(id, ep) {
-  ep = +ep || 1;
-  app.innerHTML = `<div class="watch-stage skel"></div>`;
-  let m;
-  try { m = await getMedia(id); }
-  catch { app.innerHTML = `<div class="empty"><h3>Couldn't load this episode</h3>AniList didn't respond. Go back and try again.</div>`; return; }
-  const here = location.hash;
-  const route = `#/a/${id}`, title = titleOf(m), isMovie = m.format === "MOVIE", count = episodeCount(m);
-  const ctx = { media: m, route, title, poster: m.coverImage?.large, count };
-  const autostart = autoStartOnce || prefs.autoPlay; autoStartOnce = false;
-  const toggle = (k, label) => `<button class="wt-toggle" data-pref="${k}" aria-pressed="${!!prefs[k]}"><span class="box" aria-hidden="true"></span>${label}</button>`;
+function streamKey(row) {
+  const s = row?.s || {};
+  return (row?.a?.key || "") + "|" + (s.url || s.ytId || s.externalUrl || s.infoHash || s.name || "");
+}
+function paintSources(root, rows, report, pending) {
+  const box = root.querySelector("#wtSources");
+  if (!box) return;
+  page.rows = rows;
+  const groups = [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"], ["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]];
+  const kind = st => { try { return KumoPlayback.kindLabel(st); } catch { return ""; } };
+  const tagOf = disp => disp === "blocked" ? "Blocked by Real-Debrid" : disp === "uncached" ? "Not cached" : disp === "wrong-ip" ? "Different connection" : disp === "slate" ? "Unavailable" : disp === "failed" ? "Didn't play" : "";
+  const showAll = !!prefs.showAllSources;
+  const hide = (s, url) => { try { return KumoPlayback.hideFromList(s, verdictOf(url), showAll); } catch { return false; } };
+  if (!rows.length) {
+    box.innerHTML = pending
+      ? `<p class="muted">Asking your add-ons…</p>`
+      : `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet. Try again later or add another add-on." : `You haven't installed any add-ons. <a href="#/addons">Open Add-ons</a> to add one.`}</div>`;
+  } else {
+    const visible = rows.map((r, i) => ({ ...r, i })).filter(r => !hide(r.s, r.s.url));
+    box.innerHTML = visible.length ? groups.map(([g, label, icon]) => {
+      const list = visible.filter(r => r.audio === g);
+      return list.length ? `<div class="wt-group"><div class="wt-group-h"><span class="wt-badge">${icon}</span>${label}</div><div class="wt-grid">${list.map(r => {
+        let disp = "ready";
+        try { disp = KumoPlayback.listDisposition(r.s, verdictOf(r.s.url)); } catch {}
+        const tag = tagOf(disp);
+        return `<button class="wt-src${disp !== "ready" ? " bad" : ""}" type="button" data-i="${r.i}" data-disp="${disp}" data-key="${esc(r.key || streamKey(r))}" ${playable(r.s) || r.s.externalUrl ? "" : "disabled"}><span class="dot">▶</span><span class="nm">${esc((r.s.name || r.a.manifest.name).split("\n")[0])}</span><small>${esc(r.a.manifest.name)}${kind(r.s) ? " · " + kind(r.s) : ""}${tag ? " · " + esc(tag) : ""}</small></button>`;
+      }).join("")}</div></div>` : "";
+    }).join("") : (pending ? `<p class="muted">Asking your add-ons…</p>` : `<p class="muted">Nothing here can play immediately. Turn on Show all sources for uncached and blocked links.</p>`);
+  }
+  if (report?.length && !pending) box.insertAdjacentHTML("beforeend", `<details class="wt-report"${rows.some(r => playable(r.s) && !hide(r.s, r.s.url)) ? "" : " open"}><summary>Add-on status (${report.length})</summary><ul>${report.map(r => `<li><b>${esc(r.a.manifest.name)}</b> ${esc(r.why)}.</li>`).join("")}</ul></details>`);
+  if (page.playingKey) box.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", b.dataset.key === page.playingKey));
+}
+function paintWatch(root, m, ep) {
+  const sig = mediaSig(m) + ":" + ep;
+  if (root.dataset.sig === sig && root.querySelector("#wtSources")) return false;
+  if (root.querySelector("media-player, .pv-holder")) return false;
+  root.dataset.sig = sig;
+  const id = m.id, route = `#/a/${id}`, title = titleOf(m), isMovie = m.format === "MOVIE", count = episodeCount(m);
+  const poster = m.bannerImage || m.coverImage?.large || "";
+  if (poster) preloadHero(poster);
+  rememberMedia(m);
+  const toggle = (k, label) => `<button class="wt-toggle" type="button" data-pref="${k}" aria-pressed="${!!prefs[k]}"><span class="box" aria-hidden="true"></span>${label}</button>`;
   const air = m.nextAiringEpisode ? `Episode ${m.nextAiringEpisode.episode} arrives ${new Date(m.nextAiringEpisode.airingAt * 1000).toLocaleString(undefined, { weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" })}.` : "";
-  rememberMediaAir([m]);
-  app.innerHTML = `
+  root.innerHTML = `
     <div class="watch-stage" id="watchStage">
-      <div class="wt-poster" style="background-image:url('${esc(m.bannerImage || m.coverImage?.large || "")}')"></div>
-      <button class="wt-play" id="wtStart" aria-label="Play">${ICON.play}</button>
+      <div class="wt-poster">${poster ? `<img src="${esc(poster)}" alt="" fetchpriority="high" decoding="async" width="1900" height="400">` : ""}</div>
+      <button class="wt-play" id="wtStart" type="button" aria-label="Play">${ICON.play}</button>
       <div class="wt-status" id="wtStatus">Finding sources…</div>
     </div>
     <div class="wt-bar">
@@ -578,76 +900,95 @@ async function viewWatch(id, ep) {
           <option value="outplayer">Outplayer</option>
         </select>
       </label>
-      ${isMovie ? "" : `<div class="wt-nav"><button class="wt-navbtn" id="wtPrev" ${ep <= 1 ? "disabled" : ""}>⏮ Prev</button><button class="wt-navbtn" id="wtNext" ${ep >= count ? "disabled" : ""}>Next ⏭</button></div>`}
+      ${isMovie ? "" : `<div class="wt-nav"><button class="wt-navbtn" type="button" id="wtPrev" data-href="#/watch/${id}/${ep - 1}" ${ep <= 1 ? "disabled" : ""}>⏮ Prev</button><button class="wt-navbtn" type="button" id="wtNext" data-href="#/watch/${id}/${ep + 1}" ${ep >= count ? "disabled" : ""}>Next ⏭</button></div>`}
     </div>
     <div class="wt-info">You're watching <b>${isMovie ? esc(title) : "Episode " + ep}</b>${isMovie ? "" : ` of <a href="${route}">${esc(title)}</a>`}. If a source doesn't work, try another one below.</div>
     <div id="wtSources" class="wt-sources"><p class="muted">Asking your add-ons…</p></div>
-    ${air ? `<div class="wt-air">${esc(air)}</div>` : ""}
-    ${isMovie || !count ? "" : section("Episodes", `<div class="eps">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
+    ${air ? `<div class="wt-air">🔔 ${esc(air)}</div>` : ""}
+    ${isMovie ? "" : section("Episodes", `<div class="eps" data-route="${esc(route)}">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
       const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
-      return `<a class="ep${pct > 92 ? " seen" : ""}" href="#/watch/${id}/${n}" ${n === ep ? 'aria-current="true"' : ""}>${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
+      return `<a class="ep${pct > 92 ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}" ${n === ep ? 'aria-current="true"' : ""}>${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
     }).join("")}</div>`)}`;
-  app.querySelectorAll("[data-pref]").forEach(b => b.onclick = () => {
-    prefs[b.dataset.pref] = !prefs[b.dataset.pref];
-    store.set("playerPrefs", prefs);
-    b.setAttribute("aria-pressed", String(!!prefs[b.dataset.pref]));
-    if (b.dataset.pref === "showAllSources") refreshSources();
-  });
-  const extPlayer = $("#extPlayer");
+  const extPlayer = root.querySelector("#extPlayer");
   if (extPlayer) {
     extPlayer.value = ["infuse", "vlc", "outplayer"].includes(prefs.externalPlayer) ? prefs.externalPlayer : "infuse";
     extPlayer.onchange = () => { prefs.externalPlayer = extPlayer.value; store.set("playerPrefs", prefs); };
   }
-  if ($("#wtPrev")) $("#wtPrev").onclick = () => { autoStartOnce = true; location.hash = `#/watch/${id}/${ep - 1}`; };
-  if ($("#wtNext")) $("#wtNext").onclick = () => { autoStartOnce = true; location.hash = `#/watch/${id}/${ep + 1}`; };
-
-  const { results, info, report } = await fetchAniStreams(ctx, ep, isMovie);
-  if (location.hash !== here) return;
+  return true;
+}
+async function viewWatch(id, ep, root, gen) {
+  ep = +ep || 1;
+  ensurePlayerAssets();
+  const here = "#/watch/" + id + "/" + ep;
+  const local = recallMedia(id);
+  if (local?.data) paintWatch(root, local.data, ep);
+  else root.innerHTML = `<div class="watch-stage skel" id="watchStage"></div><div class="wt-bar"><div class="skel skel-line" style="height:44px"></div></div><div id="wtSources" class="wt-sources"><p class="muted">Asking your add-ons…</p></div>`;
+  let m = local?.data;
+  try {
+    const fresh = await getMedia(id);
+    if (root.dataset.gen !== String(gen) || location.hash !== here) return;
+    m = fresh;
+    paintWatch(root, m, ep);
+  } catch {
+    if (!m) { if (root.dataset.gen === String(gen)) root.innerHTML = `<div class="empty"><h3>Couldn't load this episode</h3>AniList didn't respond. Go back and try again.</div>`; return; }
+  }
+  if (!root.querySelector("#wtSources")) paintWatch(root, m, ep);
+  const route = `#/a/${id}`, title = titleOf(m), isMovie = m.format === "MOVIE", count = episodeCount(m);
+  const ctx = { media: m, route, title, poster: m.coverImage?.large, count };
+  const autostart = autoStartOnce || prefs.autoPlay; autoStartOnce = false;
+  const startedAt = Date.now();
+  let started = false, inspected = false, lastReport = [];
   const rows = [];
-  for (const r of results) for (const st of r.streams) rows.push({ a: r.a, s: st, audio: audioOf(st) });
-  const groups = [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"], ["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]];
-  const kind = st => KumoPlayback.kindLabel(st);
-  const tagOf = disp => disp === "blocked" ? "Blocked by Real-Debrid" : disp === "uncached" ? "Not cached" : disp === "wrong-ip" ? "Different connection" : disp === "slate" ? "Unavailable" : disp === "failed" ? "Didn't play" : "";
-  refreshSources = () => {
-    const host = $("#wtSources");
-    if (!host || location.hash !== here) return;
-    if (!rows.length) {
-      host.innerHTML = `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet. Try again later or add another add-on." : `You haven't installed any add-ons. <a href="#/addons">Open Add-ons</a> to add one.`}</div>`;
-    } else {
-      const visible = rows.map((r, i) => ({ ...r, i })).filter(r => !KumoPlayback.hideFromList(r.s, verdictOf(r.s.url), prefs.showAllSources));
-      host.innerHTML = visible.length ? groups.map(([g, label, icon]) => {
-        const list = visible.filter(r => r.audio === g);
-        return list.length ? `<div class="wt-group"><div class="wt-group-h"><span class="wt-badge">${icon}</span>${label}</div><div class="wt-grid">${list.map(r => {
-          const disp = KumoPlayback.listDisposition(r.s, verdictOf(r.s.url));
-          const tag = tagOf(disp);
-          const bad = disp !== "ready";
-          return `<button class="wt-src${bad ? " bad" : ""}" data-i="${r.i}" data-disp="${disp}" ${playable(r.s) || r.s.externalUrl ? "" : "disabled"}><span class="dot">▶</span><span class="nm">${esc((r.s.name || r.a.manifest.name).split("\n")[0])}</span><small>${esc(r.a.manifest.name)}${kind(r.s) ? " · " + kind(r.s) : ""}${tag ? " · " + esc(tag) : ""}</small></button>`;
-        }).join("")}</div></div>` : "";
-      }).join("") : `<p class="muted">Nothing here can play immediately. Turn on Show all sources for uncached and blocked links.</p>`;
-    }
-    if (report.length) host.insertAdjacentHTML("beforeend", `<details class="wt-report"${rows.some(r => playable(r.s) && !KumoPlayback.hideFromList(r.s, verdictOf(r.s.url), prefs.showAllSources)) ? "" : " open"}><summary>Add-on status (${report.length})</summary><ul>${report.map(r => `<li><b>${esc(r.a.manifest.name)}</b> ${esc(r.why)}.</li>`).join("")}</ul></details>`);
-    host.querySelectorAll(".wt-src").forEach(b => b.onclick = () => playPicked(+b.dataset.i));
+  const seen = new Set();
+  const bindRefresh = pending => {
+    refreshSources = () => {
+      if (location.hash !== here || root.dataset.gen !== String(gen)) return;
+      paintSources(root, rows, lastReport, pending);
+    };
   };
-  const playPicked = i => {
-    const row = rows[i];
-    const verdict = verdictOf(row?.s?.url);
-    if (row?.s?.url && verdict === "external" && !KumoPlayback.isUncachedStream(row.s)) {
-      highlightSource(i);
-      handoffExternal($("#watchStage"), info, row.s.url);
-      return;
-    }
-    playFromList(rows, i, info, $("#watchStage"), { explicit: true });
+  const maybeInspect = () => {
+    if (inspected || location.hash !== here) return;
+    inspected = true;
+    inspectSources(rows, here);
   };
-  refreshSources();
-  const playAuto = () => playFromList(rows, null, info, $("#watchStage"));
-  // Subbed before dubbed, and a cached Real-Debrid source before an uncached one.
-  const first = KumoPlayback.playbackOrder(rows, null, { safari: isSafariPlayer(), skipUncached: true }).find(r => playable(r.s))
-    || KumoPlayback.playbackOrder(rows, null, { safari: isSafariPlayer() }).find(r => playable(r.s));
-  if (!first) { $("#wtStatus").textContent = rows.length ? "Pick a source below." : "No sources found."; $("#wtStart").hidden = true; return; }
-  $("#wtStatus").textContent = "";
-  $("#wtStart").onclick = () => playAuto();
-  inspectSources(rows, here);
-  if (autostart) playAuto();
+  bindRefresh(1);
+  page.playAuto = () => { if (!rows.some(r => playable(r.s))) return; playFromList(rows.slice(), null, page.info, root.querySelector("#watchStage")); };
+  const maybeStart = settled => {
+    const has = rows.some(r => playable(r.s));
+    const status = root.querySelector("#wtStatus");
+    const start = root.querySelector("#wtStart");
+    if (!has && settled) { if (status) status.textContent = rows.length ? "Pick a source below." : "No sources found."; if (start) start.hidden = true; return; }
+    if (started || !autostart || !has) return;
+    if (!settled && Date.now() - startedAt < 2500) return;
+    started = true;
+    if (status) status.textContent = "";
+    page.playAuto();
+  };
+  const waitLeft = 2500 - (Date.now() - startedAt);
+  if (waitLeft > 0) setTimeout(() => { if (root.dataset.gen === String(gen) && location.hash === here) maybeStart(false); }, waitLeft);
+  const { info } = await fetchAniStreams(ctx, ep, isMovie, ({ results, info: inf, report, pending }) => {
+    if (root.dataset.gen !== String(gen) || location.hash !== here) return;
+    for (const r of results) for (const st of r.streams || []) {
+      const row = { a: r.a, s: st, audio: audioOf(st) };
+      const key = streamKey(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      row.key = key;
+      rows.push(row);
+    }
+    page.info = inf;
+    lastReport = report;
+    bindRefresh(pending);
+    paintSources(root, rows, report, pending);
+    if (pending === 0) maybeInspect();
+    maybeStart(pending === 0);
+  });
+  if (root.dataset.gen !== String(gen) || location.hash !== here) return;
+  page.info = info;
+  bindRefresh(0);
+  paintSources(root, rows, lastReport, 0);
+  maybeInspect();
+  maybeStart(true);
 }
 async function inspectSources(rows, here) {
   const queue = rows.filter(r => r.s?.url && KumoPlayback.isDebridResolver(r.s.url) && !verdictOf(r.s.url) && !KumoPlayback.isUncachedStream(r.s));
@@ -672,6 +1013,198 @@ async function inspectSources(rows, here) {
   await Promise.all([step(), step(), step()]);
 }
 
+function refreshProgressMarks(root) {
+  if (!root) return;
+  root.querySelectorAll(".eps").forEach(box => {
+    const show = box.dataset.route;
+    if (!show) return;
+    box.querySelectorAll(".ep").forEach(el => {
+      const p = progress[show + ":" + el.dataset.ep];
+      const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
+      el.classList.toggle("seen", pct > 92);
+      let bar = el.querySelector(":scope > .p");
+      if (pct) { if (!bar) { bar = document.createElement("span"); bar.className = "p"; el.appendChild(bar); } bar.style.width = pct + "%"; }
+      else if (bar) bar.remove();
+    });
+  });
+}
+
+// ---------- routing ----------
+const viewNodes = new Map();
+let activeKey = "", navPop = false, viewGen = 0, booted = false, forceRoute = false, navSerial = 0, vtActive = false;
+let leaveY = 0, freezeY = false;
+window.addEventListener("scroll", () => { if (!freezeY) leaveY = window.scrollY; }, { passive: true });
+document.addEventListener("click", e => {
+  const t = e.target;
+  if (t instanceof Element && t.closest("a[href^='#/']")) { leaveY = window.scrollY; freezeY = true; }
+}, true);
+function goHash(hash) { leaveY = window.scrollY; freezeY = true; location.hash = hash; }
+function routeKey() { const h = location.hash; return !h || h === "#" ? "#/" : h; }
+function swapView(fn) {
+  const mine = ++navSerial;
+  const run = () => { if (mine === navSerial) fn(); };
+  if (!booted || reduceMotion || vtActive || typeof document.startViewTransition !== "function") {
+    booted = true;
+    vtActive = false;
+    run();
+    return;
+  }
+  vtActive = true;
+  try {
+    const t = document.startViewTransition(run);
+    t.finished.finally(() => { if (mine === navSerial) vtActive = false; }).catch(() => {});
+  } catch { vtActive = false; run(); }
+}
+function updateDock(key) {
+  const p = key.replace(/^#\/?/, "").split("/")[0];
+  const tab = { "": "home", search: "search", list: "list", addons: "addons" }[p] || "";
+  document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === tab ? "page" : "false"));
+}
+function snapshotPage(el) {
+  if (!el) return;
+  el._page = {
+    rows: page.rows, streamRows: page.streamRows, info: page.info, playAuto: page.playAuto,
+    loadVid: page.loadVid, toggleList: page.toggleList, playNext: page.playNext,
+    playTrailer: page.playTrailer, playMain: page.playMain, onMore: page.onMore,
+    playingKey: page.playingKey, searchRoot: page.searchRoot,
+  };
+}
+function restorePage(el) {
+  if (el?._page) Object.assign(page, el._page);
+}
+function resetPage() {
+  page.rows = null; page.streamRows = null; page.info = null; page.playAuto = null; page.loadVid = null;
+  page.toggleList = null; page.playNext = null; page.playTrailer = null; page.playMain = null; page.onMore = null;
+  page.playingKey = ""; page.searchRoot = null;
+}
+function renderRoute(key, root, gen) {
+  resetPage();
+  const h = key.replace(/^#\/?/, "");
+  const [p, ...rest] = h.split("/");
+  // Don't return these promises: a view transition waits on the update callback.
+  if (!p) viewHome(root, gen);
+  else if (p === "watch") viewWatch(rest[0], rest[1], root, gen);
+  else if (p === "search") { if (rest[0]) filters.q = decodeURIComponent(rest.join("/")); viewSearch(root, !rest[0] && !filters.q); }
+  else if (p === "a") viewAnime(rest[0], root, gen);
+  else if (p === "m") viewMeta(decodeURIComponent(rest[0]), decodeURIComponent(rest[1] || ""), decodeURIComponent(rest.slice(2).join("/")), root, gen);
+  else if (p === "list") viewList(root);
+  else if (p === "addons") viewAddons(root);
+  else viewHome(root, gen);
+}
+function hidePlaying() {
+  if ($("#player").hidden && !current) return;
+  teardown();
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  const player = $("#player");
+  player.hidden = true;
+  player.style.display = "none";
+  document.body.style.overflow = "";
+  current = null;
+}
+function route() {
+  if (swReload && $("#player").hidden && !current) { swReload = false; location.reload(); return; }
+  const key = routeKey();
+  const departingY = leaveY;
+  freezeY = false;
+  const parts = key.replace(/^#\/?/, "").split("/");
+  if (parts[0] === "a" && parts[2]) { location.replace(`#/watch/${parts[1]}/${parts[2]}`); return; }
+  const pop = navPop; navPop = false;
+  updateDock(key);
+  if (forceRoute) { viewNodes.delete(key); viewNodes.delete("#/"); viewNodes.delete("#/list"); if (activeKey === key) activeKey = ""; forceRoute = false; }
+  if (key === activeKey && app.firstElementChild?.classList?.contains("view")) {
+    cancelPlayback();
+    refreshProgressMarks(app.firstElementChild);
+    if (key === "#/") refreshContinue();
+    return;
+  }
+  cancelPlayback();
+  hidePlaying();
+  const reuse = key.startsWith("#/watch") ? null : viewNodes.get(key);
+  swapView(() => {
+    let root;
+    if (activeKey && activeKey !== key) {
+      const el = app.firstElementChild;
+      if (el?.classList?.contains("view") && !activeKey.startsWith("#/watch")) {
+        snapshotPage(el);
+        viewNodes.delete(activeKey);
+        viewNodes.set(activeKey, { el, y: departingY, at: Date.now() });
+        while (viewNodes.size > 8) viewNodes.delete(viewNodes.keys().next().value);
+      }
+      if (el) el.remove();
+    }
+    if (reuse?.el) { root = reuse.el; app.replaceChildren(root); }
+    else { root = document.createElement("div"); root.className = "view"; app.replaceChildren(root); }
+    activeKey = key;
+    if (reuse?.el) {
+      restorePage(reuse.el);
+      const y = pop ? (reuse.y || 0) : 0;
+      const snap = () => window.scrollTo(0, y);
+      snap();
+      requestAnimationFrame(() => requestAnimationFrame(snap));
+      refreshProgressMarks(root);
+      if (key === "#/") refreshContinue();
+      return;
+    }
+    window.scrollTo(0, 0);
+    const gen = ++viewGen;
+    root.dataset.gen = String(gen);
+    renderRoute(key, root, gen);
+  });
+}
+window.addEventListener("popstate", () => { navPop = true; });
+if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+const searchTab = document.querySelector('.dock-item[data-tab="search"]');
+if (searchTab) searchTab.addEventListener("click", () => {
+  if (routeKey() !== "#/search") focusSearchOnOpen = true;
+});
+app.addEventListener("click", e => {
+  const t = e.target;
+  if (!(t instanceof Element)) return;
+  const quick = t.closest(".quick-add");
+  if (quick && app.contains(quick)) {
+    e.preventDefault();
+    e.stopPropagation();
+    const routeKey = quick.dataset.quick;
+    if (routeKey) toggleWatch(routeKey, quick.dataset.title || "", quick.dataset.poster || "");
+    return;
+  }
+  const pref = t.closest("[data-pref]");
+  if (pref && app.contains(pref)) {
+    prefs[pref.dataset.pref] = !prefs[pref.dataset.pref];
+    store.set("playerPrefs", prefs);
+    pref.setAttribute("aria-pressed", String(!!prefs[pref.dataset.pref]));
+    if (pref.dataset.pref === "showAllSources") refreshSources();
+    return;
+  }
+  const src = t.closest(".wt-src");
+  if (src && page.rows && !src.hasAttribute("disabled")) {
+    const i = +src.dataset.i;
+    const row = page.rows[i];
+    const verdict = row?.s?.url ? verdictOf(row.s.url) : "";
+    if (row?.s?.url && verdict === "external" && !KumoPlayback.isUncachedStream(row.s)) {
+      highlightSource(i);
+      handoffExternal(app.querySelector("#watchStage"), page.info, row.s.url);
+      return;
+    }
+    playFromList(page.rows, i, page.info, app.querySelector("#watchStage"), { explicit: true });
+    return;
+  }
+  const stream = t.closest(".stream");
+  if (stream && page.streamRows) { playFromList(page.streamRows, +stream.dataset.i, page.info, null, { explicit: true }); return; }
+  const vid = t.closest("[data-vid]");
+  if (vid && page.loadVid) { page.loadVid(vid.dataset.vid); return; }
+  if (t.closest("#wtStart")) { page.playAuto?.(); return; }
+  const prev = t.closest("#wtPrev");
+  if (prev && !prev.disabled && prev.dataset.href) { autoStartOnce = true; goHash(prev.dataset.href); return; }
+  const next = t.closest("#wtNext");
+  if (next && !next.disabled && next.dataset.href) { autoStartOnce = true; goHash(next.dataset.href); return; }
+  if (t.closest("#toggleList")) { page.toggleList?.(); return; }
+  if (t.closest("#playNext")) { page.playNext?.(); return; }
+  if (t.closest("#playTrailer")) { page.playTrailer?.(); return; }
+  if (t.closest("#playMain")) { page.playMain?.(); return; }
+  const more = t.closest("#loadMore");
+  if (more && page.onMore) { more.disabled = true; page.onMore(); }
+});
 // ---------- player ----------
 // Vidstack does the playing and controls; Kumo adds Skip intro, Next episode + auto-play,
 // subtitles from add-ons, resume and remembered speed / subtitle language.
@@ -1057,7 +1590,10 @@ function showStageMessage(mount, info, html) {
   };
 }
 function highlightSource(index) {
-  app.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", +b.dataset.i === index));
+  const rows = page.rows || [];
+  const key = rows[index] ? (rows[index].key || streamKey(rows[index])) : "";
+  page.playingKey = key;
+  app.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", (key && b.dataset.key === key) || (!key && +b.dataset.i === index)));
 }
 // explicit: play that row only and leave it highlighted.
 // otherwise: one forward pass, each source at most once, and a later tap cancels it.
@@ -1130,7 +1666,9 @@ async function playFromList(rows, startIndex, info, mount, opts) {
 // stall, or a debrid error clip. The caller tries the next source.
 function play(s, info, addonKey, mount, prepared) {
   if (s.externalUrl && !s.url && !s.ytId && !prepared?.url) { window.open(s.externalUrl, "_blank", "noopener"); return Promise.resolve({ status: "ok" }); }
-  return new Promise(resolve => {
+  const srcUrl = String(prepared?.url || s.url || "");
+  const needsHls = !nativeHls && (prepared?.type === "application/vnd.apple.mpegurl" || /\.m3u8(\?|$)/i.test(srcUrl));
+  return Promise.all([ensurePlayerAssets(), needsHls ? ensureHls() : Promise.resolve()]).then(() => new Promise(resolve => {
     let settled = false, stallTimer = null, outcome = "";
     const finish = (status, reason) => { if (settled) return; settled = true; outcome = status; clearTimeout(stallTimer); resolve({ status, reason }); };
     teardown();
@@ -1226,14 +1764,14 @@ function play(s, info, addonKey, mount, prepared) {
   customElements.whenDefined("media-player").then(() => gatherSubs(s, info)).then(addSubs).catch(() => {});
 
   current.keys = e => { if (e.key === "n" && info.next && !e.target.closest("input, select, textarea")) goNext(); };
-  });
+  })).catch(() => ({ status: "fail", reason: "assets" }));
 }
 
 // Play the next episode with a source from the same add-on if possible, else the best playable one
 async function goNext() {
   const c = current; if (!c?.info.next) return;
   const next = c.info.next;
-  if (c.mount && next.watch) { cancelPlayback(); teardown(); current = null; autoStartOnce = true; location.hash = next.watch; return; }
+  if (c.mount && next.watch) { cancelPlayback(); teardown(); current = null; autoStartOnce = true; goHash(next.watch); return; }
   const gen = ++playGen;
   teardown();
   openShell(`Loading ${next.short}…`);
@@ -1249,20 +1787,16 @@ async function goNext() {
   } catch {}
   if (gen !== playGen) return;
   closePlayer();
-  location.hash = next.page;
+  goHash(next.page);
   toast(`Pick a source for ${next.short}`);
 }
-function hideOverlay() {
+function closePlayer() {
   teardown();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  const player = $("#player");
-  player.hidden = true;
-  player.style.display = "none";
+  $("#player").hidden = true;
+  $("#player").style.display = "none";
   document.body.style.overflow = "";
   current = null;
-}
-function closePlayer() {
-  hideOverlay();
   route();
 }
 $("#playerClose").onclick = closePlayer;
@@ -1286,7 +1820,7 @@ let noteState = { items: [], dismissed: [] };
 let notesError = false;
 let notesGen = 0;
 let nextAir = store.get("nextAir", {});
-let focusSearchOnOpen = false;
+let swReload = false;
 
 function noteContext() {
   const watchingIds = new Set();
@@ -1344,8 +1878,12 @@ function rememberMediaAir(list) {
   if (changed) store.set("nextAir", nextAir);
   syncAirPills();
 }
+function eachView(fn) {
+  fn(document);
+  for (const entry of viewNodes.values()) if (entry?.el) fn(entry.el);
+}
 function syncAirPills() {
-  document.querySelectorAll("[data-air-for]").forEach(cover => {
+  eachView(root => root.querySelectorAll("[data-air-for]").forEach(cover => {
     const label = airForId(cover.dataset.airFor);
     let pill = cover.querySelector(".air-pill");
     if (!label) { if (pill) pill.remove(); return; }
@@ -1355,24 +1893,29 @@ function syncAirPills() {
       cover.appendChild(pill);
     }
     if (pill.textContent !== label) pill.textContent = label;
-  });
+  }));
 }
 function paintQuick(route) {
   const on = !!watchlist[route];
-  document.querySelectorAll(".quick-add").forEach(btn => {
-    if (btn.dataset.quick !== route) return;
-    btn.classList.toggle("on", on);
-    btn.setAttribute("aria-pressed", on ? "true" : "false");
-    const name = btn.dataset.title || "this show";
-    btn.setAttribute("aria-label", on ? `Remove ${name} from Watching` : `Add ${name} to Watching`);
-    const mark = btn.querySelector("span");
-    if (mark) mark.textContent = on ? "✓" : "+";
-  });
-  document.querySelectorAll("[data-watch]").forEach(btn => {
-    if (btn.dataset.watch !== route) return;
-    btn.textContent = on ? "✓ Watching" : "+ Watching";
+  eachView(root => {
+    root.querySelectorAll(".quick-add").forEach(btn => {
+      if (btn.dataset.quick !== route) return;
+      btn.classList.toggle("on", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      const name = btn.dataset.title || "this show";
+      btn.setAttribute("aria-label", on ? `Remove ${name} from Watching` : `Add ${name} to Watching`);
+      const mark = btn.querySelector("span");
+      if (mark) mark.textContent = on ? "✓" : "+";
+    });
+    root.querySelectorAll("[data-watch]").forEach(btn => {
+      if (btn.dataset.watch !== route) return;
+      btn.textContent = on ? "✓ Watching" : "+ Watching";
+    });
   });
 }
+const NOTES_QUERY = `query($ids:[Int],$from:Int,$to:Int,$page:Int){
+  aired:Page(page:$page,perPage:50){pageInfo{hasNextPage}airingSchedules(mediaId_in:$ids,airingAt_greater:$from,airingAt_lesser:$to,sort:TIME_DESC){episode airingAt media{id title{romaji english} coverImage{large}}}}
+  next:Page(perPage:50){media(id_in:$ids){id title{romaji english} coverImage{large} nextAiringEpisode{episode airingAt}}}}`;
 async function loadNotes() {
   const gen = ++notesGen;
   const ctx = noteContext();
@@ -1380,15 +1923,19 @@ async function loadNotes() {
   const ids = [...ctx.watchingIds];
   if (!ids.length) { notesError = false; renderBell(); return; }
   const from = ctx.nowSec - 14 * 86400;
+  const bucket = Math.floor(ctx.nowSec / (TTL.notes / 1000));
   try {
     const schedules = [];
     const medias = [];
     for (let i = 0; i < ids.length; i += 40) {
       const slice = ids.slice(i, i + 40);
+      const idKey = slice.slice().sort((a, b) => a - b).join(",");
       for (let page = 1; page <= 3; page++) {
-        const d = await anilist(`query($ids:[Int],$from:Int,$to:Int,$page:Int){
-          aired:Page(page:$page,perPage:50){pageInfo{hasNextPage}airingSchedules(mediaId_in:$ids,airingAt_greater:$from,airingAt_lesser:$to,sort:TIME_DESC){episode airingAt media{id title{romaji english} coverImage{large}}}}
-          next:Page(perPage:50){media(id_in:$ids){id title{romaji english} coverImage{large} nextAiringEpisode{episode airingAt}}}}`, { ids: slice, from, to: ctx.nowSec, page });
+        const d = await anilist(NOTES_QUERY, { ids: slice, from, to: ctx.nowSec, page }, {
+          key: "notes:" + idKey + ":" + bucket + ":" + page,
+          ttl: TTL.notes,
+          staleFactor: 6,
+        });
         if (gen !== notesGen) return;
         schedules.push(...(d?.aired?.airingSchedules || []));
         if (page === 1) medias.push(...(d?.next?.media || []));
@@ -1417,7 +1964,7 @@ function renderBell() {
   if (bell) bell.setAttribute("aria-label", unread ? `${unread} new episode${unread === 1 ? "" : "s"}` : "New episodes");
   const panel = $("#notesPanel");
   if (!panel || panel.hidden) return;
-  const row = item => `<a class="note-row" href="#/watch/${item.mediaId}/${item.episode}">${item.poster ? `<img src="${esc(item.poster)}" alt="" loading="lazy">` : `<span class="note-ph" aria-hidden="true"></span>`}<div><b>${esc(item.title || "Episode " + item.episode)}</b><span>Episode ${item.episode} · ${ago(item.airingAt)}</span></div></a>`;
+  const row = item => `<a class="note-row" href="#/watch/${item.mediaId}/${item.episode}">${item.poster ? `<img src="${esc(item.poster)}" alt="" width="36" height="54" loading="lazy" decoding="async">` : `<span class="note-ph" aria-hidden="true"></span>`}<div><b>${esc(item.title || "Episode " + item.episode)}</b><span>Episode ${item.episode} · ${ago(item.airingAt)}</span></div></a>`;
   const rows = noteState.items.map(row).join("");
   panel.innerHTML = `<div class="notes-head">New episodes</div>` +
     (!Object.keys(watchlist).length ? `<p class="notes-empty">Add a show to Watching and Kumo will tell you when a new episode airs.</p>`
@@ -1439,15 +1986,29 @@ document.addEventListener("click", e => { if (!e.target.closest("#notesPanel, #b
 window.addEventListener("hashchange", () => toggleNotes(false));
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadNotes(); });
 setInterval(loadNotes, 15 * 60 * 1000);
-loadNotes();
+idle(loadNotes);
 
 // ---------- accounts (Supabase) ----------
 // Sign up / log in with email + password. Watching and progress are kept in one
 // row per person (public.user_data, protected by row-level security).
 const SUPABASE_URL = "https://xaiwuqyudxmypdairyab.supabase.co";
 const SUPABASE_KEY = "sb_publishable_XH_vVGedmDfC0KTNUqpWbA_q35TWZXL"; // publishable key: safe in page code
-const sb = window.supabase && !SUPABASE_KEY.startsWith("PASTE") ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, detectSessionInUrl: true } }) : null;
+let sb = null;
 let account = null, syncTimer = null, syncState = "", recovering = false;
+function initSupabase() {
+  if (sb || !window.supabase || SUPABASE_KEY.startsWith("PASTE")) return;
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true, detectSessionInUrl: true } });
+  sb.auth.onAuthStateChange((event, session) => {
+    const was = account?.id;
+    account = session?.user || null;
+    if (/access_token|type=recovery/.test(location.hash)) history.replaceState(null, "", location.pathname + "#/");
+    if (event === "PASSWORD_RECOVERY") { recovering = true; togglePanel("#acctPanel", true); }
+    if (account && account.id !== was) { syncState = ""; pullAndMerge(); toast("Logged in"); }
+    renderAccount();
+  });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) pushNow(); else if (account) pullAndMerge(); });
+  renderAccount();
+}
 
 function mergeData(remote) {
   const w = { ...(remote?.watchlist || {}) };
@@ -1464,7 +2025,7 @@ async function pullAndMerge() {
   if (error) { syncState = "Couldn't sync. Check your connection."; return renderAccount(); }
   mergeData(data);
   await pushNow();
-  loadNotes(); route();
+  loadNotes(); forceRoute = true; route();
 }
 async function pushNow() {
   if (!sb || !account) return;
@@ -1538,66 +2099,28 @@ function togglePanel(id, open) {
   p.style.display = p.hidden ? "none" : "";
   return !p.hidden;
 }
-$("#acctBtn").onclick = e => { e.stopPropagation(); toggleNotes(false); if (togglePanel("#acctPanel")) renderAccount(); };
+$("#acctBtn").onclick = e => {
+  e.stopPropagation();
+  toggleNotes(false);
+  if (!togglePanel("#acctPanel")) return;
+  if (sb) { renderAccount(); return; }
+  $("#acctPanel").innerHTML = `<div class="notes-head">Account</div><p class="notes-empty">Loading…</p>`;
+  ensureSupabase().then(() => { if (!$("#acctPanel").hidden) renderAccount(); }).catch(() => {
+    if (!$("#acctPanel").hidden) $("#acctPanel").innerHTML = `<div class="notes-head">Account</div><p class="notes-empty">Couldn't reach the account service. Check your connection.</p>`;
+  });
+};
 document.addEventListener("click", e => { if (!e.target.closest("#acctPanel, #acctBtn")) togglePanel("#acctPanel", false); });
 window.addEventListener("hashchange", () => togglePanel("#acctPanel", false));
-if (sb) {
-  sb.auth.onAuthStateChange((event, session) => {
-    const was = account?.id;
-    account = session?.user || null;
-    if (/access_token|type=recovery/.test(location.hash)) history.replaceState(null, "", location.pathname + "#/");
-    if (event === "PASSWORD_RECOVERY") { recovering = true; togglePanel("#acctPanel", true); }
-    if (account && account.id !== was) { syncState = ""; pullAndMerge(); toast("Logged in"); }
-    renderAccount();
-  });
-  document.addEventListener("visibilitychange", () => { if (document.hidden) pushNow(); else if (account) pullAndMerge(); });
-}
 renderAccount();
 
-// ---------- routing ----------
-let swReload = false;
-function route() {
-  if (swReload && $("#player").hidden && !current) { swReload = false; location.reload(); return; }
-  const h = location.hash.replace(/^#\/?/, "");
-  const [p, ...rest] = h.split("/");
-  document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === ({ "": "home", search: "search", list: "list", addons: "addons" }[p] || "") ? "page" : "false"));
-  cancelPlayback();
-  const overlayOpen = !$("#player").hidden;
-  if (overlayOpen) hideOverlay();
-  else if (current?.mount) { teardown(); current = null; }
-  window.scrollTo(0, 0);
-  if (!p) return viewHome();
-  if (p === "watch") return viewWatch(rest[0], rest[1]);
-  if (p === "search") { if (rest[0]) filters.q = decodeURIComponent(rest.join("/")); return viewSearch(!rest[0] && !filters.q); }
-  if (p === "a") { if (rest[1]) { location.replace(`#/watch/${rest[0]}/${rest[1]}`); return; } return viewAnime(rest[0]); }
-  if (p === "m") return viewMeta(decodeURIComponent(rest[0]), decodeURIComponent(rest[1]), decodeURIComponent(rest.slice(2).join("/")));
-  if (p === "list") return viewList();
-  if (p === "addons") return viewAddons();
-  viewHome();
-}
 window.addEventListener("hashchange", route);
-const searchTab = document.querySelector('.dock-item[data-tab="search"]');
-if (searchTab) searchTab.addEventListener("click", () => {
-  if ((location.hash || "#/") !== "#/search") focusSearchOnOpen = true;
-});
-app.addEventListener("click", e => {
-  const btn = e.target.closest(".quick-add");
-  if (!btn || !app.contains(btn)) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const routeKey = btn.dataset.quick;
-  if (!routeKey) return;
-  toggleWatch(routeKey, btn.dataset.title || "", btn.dataset.poster || "");
-});
 route();
-// A home-screen launch on iOS can keep the previous HTML until it is fetched
-// again. Once this version is running, a network-first worker updates later
-// deploys. It only covers the app shell: video, Range, and cross-origin
-// requests are not intercepted.
-// iOS will keep serving a cached sw.js for a day unless updateViaCache is
-// none, so a Home Screen icon can sit on the previous deploy. When a new
-// worker takes over and nothing is playing, reload once so this page matches it.
-if ("serviceWorker" in navigator && /(^|\.)github\.io$/.test(location.hostname)) {
+idle(() => { ensureSupabase().catch(() => {}); });
+window.addEventListener("load", () => {
+  // iOS will keep serving a cached sw.js for a day unless updateViaCache is
+  // none, so a Home Screen icon can sit on the previous deploy. When a new
+  // worker takes over and nothing is playing, reload once so this page matches it.
+  if (!("serviceWorker" in navigator) || !/(^|\.)github\.io$/.test(location.hostname)) return;
   const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hadController) return;
@@ -1609,4 +2132,4 @@ if ("serviceWorker" in navigator && /(^|\.)github\.io$/.test(location.hostname))
       if (!document.hidden) reg.update().catch(() => {});
     });
   }).catch(() => {});
-}
+});
