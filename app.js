@@ -85,7 +85,7 @@ function baseUrl(u) { return u.replace(/\/manifest\.json(\?.*)?$/, "").replace(/
 // Build a resource URL from an add-on's manifest URL, keeping any ?query the add-on uses for its settings
 function addonUrl(manifestUrl, path) {
   const u = new URL(manifestUrl);
-  u.pathname = u.pathname.replace(/\/manifest\.json$/, "").replace(/\/+$/, "") + "/" + path;
+  u.pathname = u.pathname.replace(/\/manifest\.json$/i, "").replace(/\/+$/, "") + "/" + path;
   return u.toString();
 }
 function normaliseUrl(u) {
@@ -114,7 +114,7 @@ async function call(a, resource, type, id, ctx) {
 }
 async function installAddon(url, quiet) {
   url = normaliseUrl(url);
-  const manifestUrl = /manifest\.json/.test(url) ? url : addonUrl(url, "manifest.json");
+  const manifestUrl = /manifest\.json/i.test(url) ? url : addonUrl(url, "manifest.json");
   if (addons.some(a => baseUrl(a.url) === baseUrl(manifestUrl))) { if (!quiet) toast("That add-on is already installed"); return false; }
   const r = await fetch(manifestUrl);
   if (!r.ok) throw new Error(`The link answered with error ${r.status}`);
