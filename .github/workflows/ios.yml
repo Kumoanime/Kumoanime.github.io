@@ -27,20 +27,37 @@ jobs:
       - name: Select Xcode
         run: |
           set -euo pipefail
-          selected=""
-          for app in /Applications/Xcode_16*.app; do
+          echo "Available Xcode apps:"
+          ls -d /Applications/Xcode*.app
+          # Xcode 16.0 is installed but its iOS platform was removed from the
+          # runner image. 16.4 is the default and still has iphoneos.
+          chosen=""
+          for app in \
+            /Applications/Xcode_16.4.app \
+            /Applications/Xcode_16.4.0.app \
+            /Applications/Xcode.app \
+            /Applications/Xcode_16.3.app \
+            /Applications/Xcode_16.2.app \
+            /Applications/Xcode_16.1.app
+          do
             if [ -d "$app" ]; then
-              selected="$app"
+              chosen="$app"
+              break
             fi
           done
-          if [ -n "$selected" ]; then
-            sudo xcode-select -s "$selected"
-            echo "Using $selected"
-          else
-            echo "No Xcode 16 install found; using the image default."
+          if [ -n "$chosen" ]; then
+            sudo xcode-select -s "$chosen"
+            echo "Using $chosen"
           fi
           xcode-select -p
           xcodebuild -version
+          echo "Installed SDKs:"
+          xcodebuild -showsdks
+          if ! xcodebuild -showsdks | grep -q iphoneos; then
+            echo "iOS platform is missing from this Xcode. Downloading it."
+            xcodebuild -downloadPlatform iOS
+            xcodebuild -showsdks
+          fi
 
       - name: Install XcodeGen
         run: |
