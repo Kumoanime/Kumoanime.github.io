@@ -283,8 +283,9 @@ a.ep{text-align:center;text-decoration:none;color:inherit}
 .kumo-player .pv-pills{bottom:calc(84px + env(safe-area-inset-bottom,0px));z-index:10}
 .watch-stage .kumo-player .pv-pills{bottom:72px}
 .kumo-player .pv-count{z-index:20}
-.player-stage .err,.pv-holder .err{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;background:rgb(0 0 0/.85);border-radius:12px;padding:16px 18px;color:#fff;text-align:center;max-width:min(46ch,92%)}
+.player-stage .err,.pv-holder .err{position:absolute;left:8px;right:8px;top:8px;bottom:8px;transform:none;z-index:30;background:rgb(0 0 0/.85);border-radius:12px;padding:16px 18px;color:#fff;text-align:center;max-width:none;max-height:calc(100% - 16px);height:max-content;margin:auto;overflow:auto}
 .player-stage .err b,.pv-holder .err b{display:block;font-size:16px;margin-bottom:6px}
 .player-stage .err p,.pv-holder .err p{margin:0;font-size:14px;line-height:1.4;color:rgb(255 255 255/.88)}
+.player-stage .err .diag,.pv-holder .err .diag{margin-top:8px;font-size:11px;line-height:1.35;color:rgb(255 255 255/.62);word-break:break-word}
 .player-stage .err .ext,.pv-holder .err .ext{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:12px}
 .player-stage .err .btn,.pv-holder .err .btn{color:#fff;border-color:rgb(255 255 255/.35)}

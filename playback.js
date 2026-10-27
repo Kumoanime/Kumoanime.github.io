@@ -45,7 +45,9 @@
 
   function isDebridResolver(url) {
     const u = String(url || "");
-    if (/\/playback\/[a-f0-9]{40}(?:\/|$)/i.test(u)) return true;
+    // 40 hex, 32 char base32, or the 80-char hex-encoded form Comet sometimes keeps.
+    if (/\/playback\/[a-z2-7]{32}(?:\/|$|\?)/i.test(u)) return true;
+    if (/\/playback\/[a-f0-9]{40,80}(?:\/|$|\?)/i.test(u)) return true;
     if (/\/resolve\/[^?\s]*real-?debrid\//i.test(u)) return true;
     if (/\/real-?debrid\/[^/\s]+\/[a-f0-9]{40}(?:\/|$)/i.test(u)) return true;
     return false;
@@ -94,34 +96,140 @@
       .sort((a, b) => (audioRank[a.audio] ?? 1) - (audioRank[b.audio] ?? 1) || rankStream(b.s, safari) - rankStream(a.s, safari));
   }
 
+  // explicit: the row the user tapped, and nothing else.
+  // skipUncached: automatic fallback ignores ⬇️ sources.
+  // Either way the result is one pass with each index at most once.
   function playbackOrder(rows, startIndex, opts) {
     const ranked = orderStreams(rows, opts);
-    if (startIndex == null) return ranked;
-    const first = ranked.find(r => r.i === startIndex);
-    return first ? [first, ...ranked.filter(r => r.i !== startIndex)] : ranked;
+    if (opts?.explicit) {
+      const first = ranked.find(r => r.i === startIndex);
+      return first ? [first] : [];
+    }
+    const list = opts?.skipUncached ? ranked.filter(r => !isUncachedStream(r.s)) : ranked;
+    const seen = new Set();
+    const unique = [];
+    for (const row of list) {
+      if (seen.has(row.i)) continue;
+      seen.add(row.i);
+      unique.push(row);
+    }
+    if (startIndex == null) return unique;
+    const first = unique.find(r => r.i === startIndex);
+    return first ? [first, ...unique.filter(r => r.i !== startIndex)] : unique;
+  }
+
+  const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  function base32ToHex(input) {
+    const s = String(input || "").replace(/=+$/, "").toUpperCase();
+    let bits = 0, value = 0;
+    const out = [];
+    for (let i = 0; i < s.length; i++) {
+      const idx = B32.indexOf(s[i]);
+      if (idx < 0) return "";
+      value = (value << 5) | idx;
+      bits += 5;
+      if (bits >= 8) {
+        bits -= 8;
+        out.push((value >> bits) & 255);
+      }
+    }
+    return out.map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function hexAscii(input) {
+    const s = String(input || "");
+    if (!/^[a-f0-9]+$/i.test(s) || s.length % 2) return "";
+    let text = "";
+    for (let i = 0; i < s.length; i += 2) {
+      const code = parseInt(s.slice(i, i + 2), 16);
+      if (code < 32 || code > 126) return "";
+      text += String.fromCharCode(code);
+    }
+    return text;
+  }
+
+  // Comet stores the torrent id as 40 hex, 32-char base32, or 80 hex digits
+  // that are the ASCII of a 40-hex id. Real-Debrid's magnet needs 40 hex.
+  function normalizeInfoHash(raw) {
+    let s = String(raw || "").trim();
+    const btih = s.match(/btih:([a-z0-9]+)/i);
+    if (btih) s = btih[1];
+    if (/^[a-f0-9]{80}$/i.test(s)) {
+      const decoded = hexAscii(s);
+      if (/^[a-f0-9]{40}$/i.test(decoded)) s = decoded;
+    }
+    if (/^[a-z2-7]{32}$/i.test(s)) {
+      const hex = base32ToHex(s);
+      if (/^[a-f0-9]{40}$/i.test(hex)) s = hex;
+    }
+    return /^[a-f0-9]{40}$/i.test(s) ? s.toLowerCase() : "";
   }
 
   function hashOf(s) {
-    const direct = s?.infoHash || s?.info_hash || "";
-    if (/^[a-f0-9]{40}$/i.test(direct)) return direct.toLowerCase();
+    const direct = normalizeInfoHash(s?.infoHash || s?.info_hash || "");
+    if (direct) return direct;
+    const binge = String(s?.behaviorHints?.bingeGroup || "");
+    const pieces = binge.split("|");
+    for (let i = pieces.length - 1; i >= 0; i--) {
+      const fromGroup = normalizeInfoHash(pieces[i]);
+      if (fromGroup) return fromGroup;
+    }
     const u = String(s?.url || "");
-    const m = u.match(/\/playback\/([a-f0-9]{40})\//i)
+    const m = u.match(/\/playback\/([a-z0-9]{32,80})(?:\/|$|\?)/i)
       || u.match(/\/real-?debrid\/[^/]+\/([a-f0-9]{40})(?:\/|$)/i)
-      || u.match(/[?&](?:hash|infoHash)=([a-f0-9]{40})\b/i);
-    return m ? m[1].toLowerCase() : "";
+      || u.match(/[?&](?:hash|infoHash|info_hash)=([a-z0-9]{32,80})\b/i);
+    return m ? normalizeInfoHash(m[1]) : "";
   }
 
   function playbackParts(url) {
-    const m = String(url || "").match(/\/playback\/([a-f0-9]{40})\/([^/]+)\/([^/]+)\/([^/]+)\/([^/?#]+)/i);
+    const m = String(url || "").match(/\/playback\/([a-z0-9]{32,80})\/([^/]+)\/([^/]+)\/([^/]+)\/([^/?#]+)/i);
     if (!m) return null;
+    const hash = normalizeInfoHash(m[1]);
+    if (!hash) return null;
     const num = v => /^-?\d+$/.test(v) ? +v : null;
     return {
-      hash: m[1].toLowerCase(),
+      hash,
       serviceIndex: m[2],
       fileIndex: m[3] === "n" ? null : m[3],
       season: num(m[4]),
       episode: num(m[5]),
     };
+  }
+
+  // What to tell the person when a debrid file cannot be handed to the player.
+  // A saved proxy must never be told to "add a proxy".
+  function explainFailure(info) {
+    const hash = !!info?.hash;
+    const token = !!info?.token;
+    const proxy = !!info?.proxy;
+    const block = info?.block || null;
+    const asksForProxy = block && (block.kind === "cors" || /add a proxy|blocks websites/i.test(block.message || ""));
+    let kind, message;
+    if (!hash) {
+      kind = "hash";
+      message = "Couldn't find the torrent hash in this source.";
+    } else if (!token) {
+      kind = "token";
+      message = "No Real-Debrid token found.";
+    } else if (proxy && asksForProxy) {
+      kind = "proxy";
+      message = "The saved proxy didn't get an answer from Real-Debrid.";
+    } else if (block?.message) {
+      kind = block.kind || "unsupported";
+      message = block.message;
+    } else if (!proxy) {
+      kind = "proxy";
+      message = "iPhone Safari can't play this MKV. Add a proxy URL on the Add-ons page, or open this source in VLC or Infuse.";
+    } else {
+      kind = "unsupported";
+      message = "Real-Debrid didn't return a playable stream.";
+    }
+    const bits = ["kind " + kind, "hash " + (hash ? "yes" : "no"), "token " + (token ? "yes" : "no"), "proxy " + (proxy ? "yes" : "no")];
+    const status = block?.status || info?.status;
+    if (status) bits.push("HTTP " + status);
+    const err = block?.error || info?.error;
+    if (err) bits.push(String(err).replace(/\s+/g, " ").slice(0, 80));
+    return { kind, message, detail: bits.join(" · ") };
   }
 
   // Only name a type when the URL actually says what it is. A Comet playback
@@ -374,16 +482,18 @@
   }
 
   function failRd(e) {
-    const kind = e?.cors ? "cors" : rdErrorKind(e?.status, e?.code, e?.message);
+    const kind = e?.proxy ? "proxy" : e?.cors ? "cors" : rdErrorKind(e?.status, e?.code, e?.message);
     const message = {
       auth: "Real-Debrid refused the token. Reconnect it in the add-on, or paste a new token on the Add-ons page.",
       infringing: "Real-Debrid blocked that file (copyright filter).",
       rate: "Real-Debrid asked us to slow down. Wait a moment and try again.",
       cors: "Real-Debrid's API blocks browsers. Add the proxy URL on the Add-ons page.",
+      proxy: "The saved proxy didn't get an answer from Real-Debrid.",
       ip: "Real-Debrid rejected the network this phone is on.",
       unavailable: "Real-Debrid doesn't have a playable copy of that file.",
     }[kind] || "Real-Debrid didn't return a playable stream.";
-    return { ok: false, kind, message };
+    const error = e?.cause?.message || (kind === "proxy" || kind === "cors" ? e?.message : "") || "";
+    return { ok: false, kind, message, status: e?.status || 0, error };
   }
 
   function externalPlayers(url) {
@@ -400,6 +510,7 @@
     isCachedStream, isUncachedStream, rankStream, orderStreams, playbackOrder, hashOf,
     playbackParts, sourceType, kindLabel, classifyProbe, tokenFromUrl, tokenFromAddons,
     pickTorrentFile, pickTranscode, idFromDownload, rdErrorKind, resolveRealDebrid, externalPlayers,
+    normalizeInfoHash, explainFailure,
   };
   root.KumoPlayback = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
