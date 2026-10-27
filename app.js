@@ -312,7 +312,6 @@ async function viewAnime(id) {
     <div class="actions">
       <button class="btn" id="playNext">▶ ${isMovie ? "Play" : "Play episode " + nextEpisode(route, count)}</button>
       ${m.trailer?.site === "youtube" ? `<button class="btn ghost" id="playTrailer">🎬 Trailer</button>` : ""}
-      <a class="btn ghost" href="${whereToWatch(title)}" target="_blank" rel="noopener">📺 Where to watch</a>
       <button class="btn ghost" id="toggleList">${inList ? "✓ Watching" : "+ Watching"}</button>
     </div>
     ${isMovie ? "" : section("Episodes", `<div class="eps">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
@@ -489,9 +488,6 @@ function viewAddons() {
   });
 }
 
-// Legal streaming services for a show in the UK, via JustWatch
-const whereToWatch = title => `https://www.justwatch.com/uk/search?q=${encodeURIComponent(title)}`;
-
 // ---------- watch page ----------
 // Player on the page, toggles and Prev/Next under it, then sources grouped SUB / DUB.
 // Opening an episode asks every add-on straight away and starts the first playable source.
@@ -519,7 +515,7 @@ async function viewWatch(id, ep) {
       <div class="wt-toggles">${toggle("autoPlay", "Auto Play")}${isMovie ? "" : toggle("autoNext", "Auto Next")}${toggle("autoSkip", "Auto Skip intro")}</div>
       ${isMovie ? "" : `<div class="wt-nav"><button class="wt-navbtn" id="wtPrev" ${ep <= 1 ? "disabled" : ""}>⏮ Prev</button><button class="wt-navbtn" id="wtNext" ${ep >= count ? "disabled" : ""}>Next ⏭</button></div>`}
     </div>
-    <div class="wt-info"><a class="wt-where" href="${whereToWatch(title)}" target="_blank" rel="noopener">📺 Where to watch legally</a> You're watching <b>${isMovie ? esc(title) : "Episode " + ep}</b>${isMovie ? "" : ` of <a href="${route}">${esc(title)}</a>`}. If a source doesn't work, try another one below.</div>
+    <div class="wt-info">You're watching <b>${isMovie ? esc(title) : "Episode " + ep}</b>${isMovie ? "" : ` of <a href="${route}">${esc(title)}</a>`}. If a source doesn't work, try another one below.</div>
     <div id="wtSources" class="wt-sources"><p class="muted">Asking your add-ons…</p></div>
     ${air ? `<div class="wt-air">🔔 ${esc(air)}</div>` : ""}
     ${isMovie ? "" : section("Episodes", `<div class="eps">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
@@ -541,7 +537,7 @@ async function viewWatch(id, ep) {
     const list = rows.map((r, i) => ({ ...r, i })).filter(r => r.audio === g);
     return list.length ? `<div class="wt-group"><div class="wt-group-h"><span class="wt-badge">${icon}</span>${label}</div><div class="wt-grid">${list.map(r =>
       `<button class="wt-src" data-i="${r.i}" ${playable(r.s) || r.s.externalUrl ? "" : "disabled"}><span class="dot">▶</span><span class="nm">${esc((r.s.name || r.a.manifest.name).split("\n")[0])}</span><small>${esc(r.a.manifest.name)}${kind(r.s) ? " · " + kind(r.s) : ""}</small></button>`).join("")}</div></div>` : "";
-  }).join("") : `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet." : `You haven't installed any add-ons.`}<div class="actions" style="justify-content:center;margin:14px 0 0"><a class="btn" href="${whereToWatch(title)}" target="_blank" rel="noopener">📺 See where to watch it</a></div></div>`;
+  }).join("") : `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet. Try again later or add another add-on." : `You haven't installed any add-ons. <a href="#/addons">Open Add-ons</a> to add one.`}</div>`;
   if (report.length) $("#wtSources").insertAdjacentHTML("beforeend", `<details class="wt-report"${rows.some(r => playable(r.s)) ? "" : " open"}><summary>Add-on status (${report.length})</summary><ul>${report.map(r => `<li><b>${esc(r.a.manifest.name)}</b> ${esc(r.why)}.</li>`).join("")}</ul></details>`);
 
   const start = i => {
