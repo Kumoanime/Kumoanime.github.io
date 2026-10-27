@@ -5,18 +5,20 @@
 // The next navigation after a background update picks up changed files even
 // when the version query is unchanged. Video, Range, and cross-origin
 // requests are not intercepted.
-const VERSION = "25";
+const VERSION = "27";
 const CACHE = "kumo-shell-v" + VERSION;
 const PRECACHE = [
   "./",
   "./index.html",
-  "./style.css?v=25",
-  "./app.js?v=25",
-  "./playback.js?v=2",
+  "./style.css?v=27",
+  "./app.js?v=27",
+  "./playback.js?v=4",
   "./manifest.webmanifest",
-  "./icon-180.png?v=4",
-  "./icon-192.png?v=4",
-  "./icon-512.png?v=4",
+  "./icon-180.png?v=5",
+  "./icon-192.png?v=5",
+  "./icon-512.png?v=5",
+  "./icon-512-maskable.png?v=5",
+  "./splash/k-badge.png?v=5",
 ];
 const SHELL = /\/$|\/index\.html$|\.(?:html|js|css|webmanifest|png)$/;
 

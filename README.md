@@ -10,11 +10,11 @@ Each show page has a **Trailer** button that plays the official trailer from You
 
 ## Real-Debrid on iPhone
 
-Safari cannot play the MKV files Real-Debrid returns, so those sources used to sit on a black screen, spin, or play the add-on's short error clip. Kumo now skips that clip, prefers sources marked cached (the lightning bolt), and asks Real-Debrid for an HLS stream Safari can play.
+Safari cannot play the MKV files Real-Debrid returns. Kumo hides uncached sources and links that come back as Comet's error slate until you turn on **Show all sources**. A cached source that cannot play in the page opens in Infuse, VLC, or Outplayer (the choice is on the watch page). That choice is remembered, and a source that failed stays greyed out on the next visit.
 
-Real-Debrid's API does not allow browser calls. Deploy `rd-proxy/worker.js` (Cloudflare Worker: `npx wrangler deploy` inside `rd-proxy/`), then on the Add-ons page paste the worker's address. If the Comet or Torrentio install link still contains your key, Kumo uses that; otherwise paste a token from [real-debrid.com/apitoken](https://real-debrid.com/apitoken). The token stays in the browser. The proxy only forwards API calls. The video comes straight from Real-Debrid.
+Public ElfHosted Comet ties each playback link to the phone that loaded the list ([wrong IP](https://docs.elfhosted.com/m/wrong-ip)). The download host does not send CORS headers, so the page cannot read the file id and cannot start HLS itself. Infuse or VLC on that same phone can. In-app playback needs a private or self-hosted Comet, or AIOStreams, whose links are not locked to one IP — or another add-on such as Torrentio — plus the proxy below.
 
-Until that proxy is saved, a source can still be opened in VLC or Infuse from the player message. Those apps can play the original file.
+Real-Debrid's API does not allow browser calls. Deploy `rd-proxy/worker.js` (Cloudflare Worker: `npx wrangler deploy` inside `rd-proxy/`), then on the Add-ons page paste the worker's address. Redeploy that worker when `worker.js` changes. The worker asks Real-Debrid to transcode a file id when one is known, and it can follow a private Comet link. It cannot follow a public ElfHosted link. Kumo does not call `addMagnet` for these files. If the Comet or Torrentio install link still contains your key, Kumo uses that; otherwise paste a token from [real-debrid.com/apitoken](https://real-debrid.com/apitoken). The token stays in the browser. The proxy does not carry the video.
 
 ## Repositories
 

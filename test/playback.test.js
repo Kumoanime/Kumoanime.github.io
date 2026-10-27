@@ -63,6 +63,8 @@ const HASH = "0123456789abcdef0123456789abcdef01234567";
 const binge = { name: "[RD⚡] Comet 1080p", behaviorHints: { bingeGroup: "comet|realdebrid|" + HASH, filename: "Show.mkv" } };
 assert.equal(P.hashOf(binge), HASH);
 assert.equal(P.hashOf({ url: "https://comet.elfhosted.com/cfg/playback/AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH/0/n/3/1?name=Ep" }), HASH);
+assert.equal(P.hashOf({ name: "[RD⚡] Comet", url: "https://comet.elfhosted.com/playback/" + "a".repeat(180) }), "", "encrypted playback path is not a torrent hash");
+assert.equal(P.isDebridResolver("https://comet.elfhosted.com/playback/" + "a".repeat(180)), true);
 assert.equal(P.hashOf({ url: "https://comet.elfhosted.com/cfg/playback/30313233343536373839616263646566303132333435363738396162636465663031323334353637/0/2/3/1" }), HASH);
 assert.equal(P.isDebridResolver("https://comet.elfhosted.com/cfg/playback/AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH/0/n/3/1"), true);
 assert.equal(P.playbackParts("https://comet.elfhosted.com/eyJ/playback/" + HASH + "/0/n/3/1?media_type=series").fileIndex, null);
@@ -77,6 +79,9 @@ const noHash = P.explainFailure({ hash: "", token: true, proxy: true });
 assert.equal(noHash.kind, "hash");
 assert.ok(/torrent hash/.test(noHash.message));
 assert.ok(!/add a proxy/i.test(noHash.message));
+const slate = P.explainFailure({ hash: HASH, token: false, proxy: false, block: { kind: "status", step: "comet", message: "Comet's link is blocked by Real-Debrid (copyright filter)." } });
+assert.equal(slate.kind, "status");
+assert.ok(/step comet/.test(slate.detail));
 const noToken = P.explainFailure({ hash: HASH, token: false, proxy: true });
 assert.equal(noToken.kind, "token");
 assert.ok(/no real-debrid token/i.test(noToken.message));
@@ -170,7 +175,62 @@ async function fakeResolve(overrides, safari) {
     },
   });
   assert.equal(blocked.ok, false);
-  assert.equal(blocked.kind, "infringing");
+  assert.equal(blocked.kind, "refused");
+  assert.equal(blocked.step, "addMagnet");
+  assert.equal(blocked.status, 451);
+  assert.ok(!/blocked these files/i.test(blocked.message));
+
+  const cometBlocked = P.nextFromCometResolve({ ok: false, blocked: true, kind: "infringing", step: "comet", status: 200, reason: "INFRINGING_FILE" });
+  assert.equal(cometBlocked.action, "blocked");
+  assert.equal(cometBlocked.step, "comet");
+  const cometFile = P.nextFromCometResolve({ ok: true, id: "FILE1", download: "https://1.download.real-debrid.com/d/FILE1/Show.mkv", filename: "Show.mkv" });
+  assert.equal(cometFile.action, "transcode");
+  assert.equal(cometFile.id, "FILE1");
+  assert.equal(P.nextFromCometResolve({ ok: false, step: "comet", error: "Host not allowed" }).action, "external");
+  const wrongIp = P.nextFromCometResolve({ ok: false, kind: "wrong-ip", step: "comet", reason: "Opened on a different connection" });
+  assert.equal(wrongIp.action, "wrong-ip");
+  assert.equal(wrongIp.blocked, false);
+  assert.ok(!/blocked by real-debrid/i.test(wrongIp.message));
+
+  const downloadUrl = "https://20.download.real-debrid.com/d/FILEID/Show.mkv";
+  const landed = P.classifyPhoneFetch({ requestUrl: "https://comet.elfhosted.com/playback/encrypted", url: downloadUrl, status: 200, type: "basic", contentType: "video/x-matroska" });
+  assert.equal(landed.action, "transcode");
+  assert.equal(landed.id, "FILEID");
+  const slateUrl = "https://slate.elfhosted.com/slate.m3u8?title=" + encodeURIComponent("Opened on a different connection") + "&url=" + encodeURIComponent("https://docs.elfhosted.com/m/wrong-ip");
+  const slateHop = P.classifyPhoneFetch({ requestUrl: "https://comet.elfhosted.com/playback/encrypted", url: slateUrl, status: 206, type: "cors", contentType: "application/vnd.apple.mpegurl", size: 6500000, complete: true });
+  assert.equal(slateHop.action, "wrong-ip");
+  assert.equal(slateHop.blocked, false);
+  assert.match(slateHop.reason, /different connection/);
+  const infringe = P.slateFromUrl("https://slate.elfhosted.com/slate.m3u8?title=" + encodeURIComponent("Couldn't start this stream"));
+  assert.equal(infringe.action, "blocked");
+  assert.equal(infringe.kind, "infringing");
+  const opaque = P.classifyPhoneFetch({ requestUrl: "https://comet.elfhosted.com/playback/encrypted", url: "", type: "opaque", opaque: true, unreadable: true });
+  assert.equal(opaque.action, "external");
+  assert.equal(opaque.reason, "no-cors");
+  assert.equal(opaque.message, P.externalOnlyMessage);
+  const corsHide = P.classifyPhoneFetch({ requestUrl: "https://comet.elfhosted.com/playback/encrypted", unreadable: true, error: "Failed to fetch" });
+  assert.equal(corsHide.action, "external");
+  assert.equal(corsHide.reason, "cors");
+  const noHashExternal = P.explainFailure({ hash: "", token: true, proxy: true, block: opaque });
+  assert.equal(noHashExternal.kind, "external");
+  assert.ok(!/torrent hash/i.test(noHashExternal.message), noHashExternal.message);
+
+  const cached = { name: "[RD⚡] Comet", url: "https://comet.elfhosted.com/playback/x" };
+  const down = { name: "[RD⬇️] Comet", url: "https://comet.elfhosted.com/playback/y" };
+  assert.equal(P.hideFromList(down, "", false), true);
+  assert.equal(P.hideFromList(down, "", true), false);
+  assert.equal(P.hideFromList(cached, "blocked", false), true);
+  assert.equal(P.hideFromList(cached, "slate", false), true);
+  assert.equal(P.hideFromList(cached, "wrong-ip", false), true);
+  assert.equal(P.hideFromList(cached, "external", false), false);
+  assert.equal(P.listDisposition(cached, "blocked"), "blocked");
+  assert.equal(P.listDisposition(cached, "fail"), "failed");
+  assert.equal(P.externalPlayers("https://example.com/a").find(p => p.id === "infuse").name, "Infuse");
+  const refused = P.explainFailure({ hash: "0123456789abcdef0123456789abcdef01234567", token: true, proxy: true, block: blocked });
+  assert.equal(refused.kind, "refused");
+  assert.ok(/step addMagnet/.test(refused.detail), refused.detail);
+  assert.ok(/HTTP 451/.test(refused.detail));
+  assert.ok(!/add a proxy/i.test(refused.message));
 
   const chrome = await P.resolveRealDebrid({
     hash: "0123456789abcdef0123456789abcdef01234567",

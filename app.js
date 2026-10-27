@@ -810,23 +810,29 @@ function paintSources(root, rows, report, pending) {
   const box = root.querySelector("#wtSources");
   if (!box) return;
   page.rows = rows;
-  const failed = [];
   const groups = [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"], ["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]];
   const kind = st => { try { return KumoPlayback.kindLabel(st); } catch { return ""; } };
+  const tagOf = disp => disp === "blocked" ? "Blocked by Real-Debrid" : disp === "uncached" ? "Not cached" : disp === "wrong-ip" ? "Different connection" : disp === "slate" ? "Unavailable" : disp === "failed" ? "Didn't play" : "";
+  const showAll = !!prefs.showAllSources;
+  const hide = (s, url) => { try { return KumoPlayback.hideFromList(s, verdictOf(url), showAll); } catch { return false; } };
   if (!rows.length) {
     box.innerHTML = pending
       ? `<p class="muted">Asking your add-ons…</p>`
       : `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet. Try again later or add another add-on." : `You haven't installed any add-ons. <a href="#/addons">Open Add-ons</a> to add one.`}</div>`;
   } else {
-    box.innerHTML = groups.map(([g, label, icon]) => {
-      const list = rows.map((r, i) => ({ ...r, i })).filter(r => r.audio === g);
-      return list.length ? `<div class="wt-group"><div class="wt-group-h"><span class="wt-badge">${icon}</span>${label}</div><div class="wt-grid">${list.map(r =>
-        `<button class="wt-src" type="button" data-i="${r.i}" data-key="${esc(r.key || streamKey(r))}" ${playable(r.s) || r.s.externalUrl ? "" : "disabled"}><span class="dot">▶</span><span class="nm">${esc((r.s.name || r.a.manifest.name).split("\n")[0])}</span><small>${esc(r.a.manifest.name)}${kind(r.s) ? " · " + kind(r.s) : ""}</small></button>`).join("")}</div></div>` : "";
-    }).join("");
+    const visible = rows.map((r, i) => ({ ...r, i })).filter(r => !hide(r.s, r.s.url));
+    box.innerHTML = visible.length ? groups.map(([g, label, icon]) => {
+      const list = visible.filter(r => r.audio === g);
+      return list.length ? `<div class="wt-group"><div class="wt-group-h"><span class="wt-badge">${icon}</span>${label}</div><div class="wt-grid">${list.map(r => {
+        let disp = "ready";
+        try { disp = KumoPlayback.listDisposition(r.s, verdictOf(r.s.url)); } catch {}
+        const tag = tagOf(disp);
+        return `<button class="wt-src${disp !== "ready" ? " bad" : ""}" type="button" data-i="${r.i}" data-disp="${disp}" data-key="${esc(r.key || streamKey(r))}" ${playable(r.s) || r.s.externalUrl ? "" : "disabled"}><span class="dot">▶</span><span class="nm">${esc((r.s.name || r.a.manifest.name).split("\n")[0])}</span><small>${esc(r.a.manifest.name)}${kind(r.s) ? " · " + kind(r.s) : ""}${tag ? " · " + esc(tag) : ""}</small></button>`;
+      }).join("")}</div></div>` : "";
+    }).join("") : (pending ? `<p class="muted">Asking your add-ons…</p>` : `<p class="muted">Nothing here can play immediately. Turn on Show all sources for uncached and blocked links.</p>`);
   }
-  if (report?.length && !pending) box.insertAdjacentHTML("beforeend", `<details class="wt-report"${rows.some(r => playable(r.s)) ? "" : " open"}><summary>Add-on status (${report.length})</summary><ul>${report.map(r => `<li><b>${esc(r.a.manifest.name)}</b> ${esc(r.why)}.</li>`).join("")}</ul></details>`);
+  if (report?.length && !pending) box.insertAdjacentHTML("beforeend", `<details class="wt-report"${rows.some(r => playable(r.s) && !hide(r.s, r.s.url)) ? "" : " open"}><summary>Add-on status (${report.length})</summary><ul>${report.map(r => `<li><b>${esc(r.a.manifest.name)}</b> ${esc(r.why)}.</li>`).join("")}</ul></details>`);
   if (page.playingKey) box.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", b.dataset.key === page.playingKey));
-  void failed;
 }
 function paintWatch(root, m, ep) {
   const sig = mediaSig(m) + ":" + ep;
@@ -846,7 +852,14 @@ function paintWatch(root, m, ep) {
       <div class="wt-status" id="wtStatus">Finding sources…</div>
     </div>
     <div class="wt-bar">
-      <div class="wt-toggles">${toggle("autoPlay", "Auto Play")}${isMovie ? "" : toggle("autoNext", "Auto Next")}${toggle("autoSkip", "Auto Skip intro")}</div>
+      <div class="wt-toggles">${toggle("autoPlay", "Auto Play")}${isMovie ? "" : toggle("autoNext", "Auto Next")}${toggle("autoSkip", "Auto Skip intro")}${toggle("showAllSources", "Show all sources")}</div>
+      <label class="wt-player">Play outside in
+        <select id="extPlayer" aria-label="External player">
+          <option value="infuse">Infuse</option>
+          <option value="vlc">VLC</option>
+          <option value="outplayer">Outplayer</option>
+        </select>
+      </label>
       ${isMovie ? "" : `<div class="wt-nav"><button class="wt-navbtn" type="button" id="wtPrev" data-href="#/watch/${id}/${ep - 1}" ${ep <= 1 ? "disabled" : ""}>⏮ Prev</button><button class="wt-navbtn" type="button" id="wtNext" data-href="#/watch/${id}/${ep + 1}" ${ep >= count ? "disabled" : ""}>Next ⏭</button></div>`}
     </div>
     <div class="wt-info">You're watching <b>${isMovie ? esc(title) : "Episode " + ep}</b>${isMovie ? "" : ` of <a href="${route}">${esc(title)}</a>`}. If a source doesn't work, try another one below.</div>
@@ -856,6 +869,11 @@ function paintWatch(root, m, ep) {
       const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
       return `<a class="ep${pct > 92 ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}" ${n === ep ? 'aria-current="true"' : ""}>${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
     }).join("")}</div>`)}`;
+  const extPlayer = root.querySelector("#extPlayer");
+  if (extPlayer) {
+    extPlayer.value = ["infuse", "vlc", "outplayer"].includes(prefs.externalPlayer) ? prefs.externalPlayer : "infuse";
+    extPlayer.onchange = () => { prefs.externalPlayer = extPlayer.value; store.set("playerPrefs", prefs); };
+  }
   return true;
 }
 async function viewWatch(id, ep, root, gen) {
@@ -879,9 +897,21 @@ async function viewWatch(id, ep, root, gen) {
   const ctx = { media: m, route, title, poster: m.coverImage?.large, count };
   const autostart = autoStartOnce || prefs.autoPlay; autoStartOnce = false;
   const startedAt = Date.now();
-  let started = false, lastReport = [];
+  let started = false, inspected = false, lastReport = [];
   const rows = [];
   const seen = new Set();
+  const bindRefresh = pending => {
+    refreshSources = () => {
+      if (location.hash !== here || root.dataset.gen !== String(gen)) return;
+      paintSources(root, rows, lastReport, pending);
+    };
+  };
+  const maybeInspect = () => {
+    if (inspected || location.hash !== here) return;
+    inspected = true;
+    inspectSources(rows, here);
+  };
+  bindRefresh(1);
   page.playAuto = () => { if (!rows.some(r => playable(r.s))) return; playFromList(rows.slice(), null, page.info, root.querySelector("#watchStage")); };
   const maybeStart = settled => {
     const has = rows.some(r => playable(r.s));
@@ -908,13 +938,39 @@ async function viewWatch(id, ep, root, gen) {
     }
     page.info = inf;
     lastReport = report;
+    bindRefresh(pending);
     paintSources(root, rows, report, pending);
+    if (pending === 0) maybeInspect();
     maybeStart(pending === 0);
   });
   if (root.dataset.gen !== String(gen) || location.hash !== here) return;
   page.info = info;
+  bindRefresh(0);
   paintSources(root, rows, lastReport, 0);
+  maybeInspect();
   maybeStart(true);
+}
+async function inspectSources(rows, here) {
+  const queue = rows.filter(r => r.s?.url && KumoPlayback.isDebridResolver(r.s.url) && !verdictOf(r.s.url) && !KumoPlayback.isUncachedStream(r.s));
+  let cursor = 0;
+  const step = async () => {
+    while (cursor < queue.length) {
+      const row = queue[cursor++];
+      if (location.hash !== here) return;
+      try {
+        const klass = KumoPlayback.classifyProbe(await probeStream(row.s.url), row.s);
+        if (location.hash !== here) return;
+        if (klass === "status") { rememberVerdict(row.s.url, "blocked"); continue; }
+        if (klass !== "redirect") continue;
+        const phone = KumoPlayback.classifyPhoneFetch(await resolveOnPhone(row.s.url));
+        if (location.hash !== here) return;
+        if (phone.action === "blocked") rememberVerdict(row.s.url, "blocked");
+        else if (phone.action === "slate") rememberVerdict(row.s.url, "slate");
+        else if (phone.action === "wrong-ip") rememberVerdict(row.s.url, "wrong-ip");
+      } catch {}
+    }
+  };
+  await Promise.all([step(), step(), step()]);
 }
 
 function refreshProgressMarks(root) {
@@ -1054,10 +1110,22 @@ app.addEventListener("click", e => {
     prefs[pref.dataset.pref] = !prefs[pref.dataset.pref];
     store.set("playerPrefs", prefs);
     pref.setAttribute("aria-pressed", String(!!prefs[pref.dataset.pref]));
+    if (pref.dataset.pref === "showAllSources") refreshSources();
     return;
   }
   const src = t.closest(".wt-src");
-  if (src && page.rows && !src.hasAttribute("disabled")) { playFromList(page.rows, +src.dataset.i, page.info, app.querySelector("#watchStage"), { explicit: true }); return; }
+  if (src && page.rows && !src.hasAttribute("disabled")) {
+    const i = +src.dataset.i;
+    const row = page.rows[i];
+    const verdict = row?.s?.url ? verdictOf(row.s.url) : "";
+    if (row?.s?.url && verdict === "external" && !KumoPlayback.isUncachedStream(row.s)) {
+      highlightSource(i);
+      handoffExternal(app.querySelector("#watchStage"), page.info, row.s.url);
+      return;
+    }
+    playFromList(page.rows, i, page.info, app.querySelector("#watchStage"), { explicit: true });
+    return;
+  }
   const stream = t.closest(".stream");
   if (stream && page.streamRows) { playFromList(page.streamRows, +stream.dataset.i, page.info, null, { explicit: true }); return; }
   const vid = t.closest("[data-vid]");
@@ -1081,7 +1149,7 @@ const LANGS = { en: "English", eng: "English", ja: "Japanese", jpn: "Japanese", 
 const ICON = {
   play: `<svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z"/></svg>`,
 };
-let prefs = { speed: 1, subLang: "", autoNext: true, autoPlay: true, autoSkip: false, ...store.get("playerPrefs", {}) };
+let prefs = { speed: 1, subLang: "", autoNext: true, autoPlay: true, autoSkip: false, showAllSources: false, externalPlayer: "infuse", ...store.get("playerPrefs", {}) };
 let saveTimer = null, current = null, countTimer = null;
 const playable = s => s && (s.url || s.ytId);
 
@@ -1117,7 +1185,34 @@ async function gatherSubs(s, info) {
 const nativeHls = !!document.createElement("video").canPlayType("application/vnd.apple.mpegurl");
 let playGen = 0, rdCorsBlocked = false, clientIpCache = "";
 const rdPlayCache = new Map();
+let refreshSources = () => {};
 const cancelPlayback = () => { playGen++; };
+function verdicts() { return store.get("sourceVerdicts", {}); }
+function verdictOf(url) { return url ? (verdicts()[url]?.kind || "") : ""; }
+function rememberVerdict(url, kind) {
+  if (!url || !kind) return;
+  const all = verdicts();
+  all[url] = { kind, at: Date.now() };
+  const keys = Object.keys(all);
+  if (keys.length > 300) {
+    keys.sort((a, b) => (all[a]?.at || 0) - (all[b]?.at || 0));
+    for (const k of keys.slice(0, keys.length - 300)) delete all[k];
+  }
+  store.set("sourceVerdicts", all);
+  refreshSources();
+}
+function chosenExternal(url) {
+  const list = KumoPlayback.externalPlayers(url);
+  const id = prefs.externalPlayer || "infuse";
+  return list.find(p => p.id === id) || list.find(p => p.id === "infuse") || list[0];
+}
+function handoffExternal(mount, info, url) {
+  const p = chosenExternal(url);
+  const html = `<div class="err handoff"><b>Opening in ${esc(p.name)}</b><p>${esc(KumoPlayback.externalOnlyMessage)}</p><div class="ext"><button class="btn primary" type="button" data-ext="${esc(p.href)}">Open ${esc(p.name)}</button><button class="btn ghost" type="button" id="copyStream" data-url="${esc(url)}">Copy link</button></div></div>`;
+  showStageMessage(mount, info, html);
+  if ($("#wtStatus")) $("#wtStatus").textContent = "Opening in " + p.name + "…";
+  location.href = p.href;
+}
 function isSafariPlayer() {
   const ua = navigator.userAgent || "";
   const iOS = /iP(hone|ad|od)/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -1142,14 +1237,42 @@ function rdSection() {
       <button class="btn">Save</button>
     </form>
     ${saved ? `<button class="btn ghost small" id="rdClear" type="button">Forget pasted token</button>` : ""}
-    <p class="note">Deploy <code>rd-proxy/worker.js</code> (it only forwards calls to api.real-debrid.com) and paste the address above. The token stays in this browser.</p>
+    <p class="note">Deploy <code>rd-proxy/worker.js</code> with <code>npx wrangler deploy</code> and paste the address above. Redeploy it when that file changes. The token stays in this browser. Public ElfHosted Comet locks each link to this phone, so Safari cannot read the file id (Real-Debrid's download hosts send no CORS headers). Those sources open in Infuse, VLC, or Outplayer. In-app HLS needs a private or self-hosted Comet, or AIOStreams, whose links are not IP-bound — or an add-on such as Torrentio — plus this proxy. Kumo does not call addMagnet for these files.</p>
   </section>`;
 }
-function rdEndpoint(target) {
+function proxyBase() {
   let proxy = rdProxy();
-  if (!proxy) return target;
+  if (!proxy) return "";
   if (!/^https?:\/\//i.test(proxy)) proxy = "https://" + proxy;
-  return proxy.replace(/\/+$/, "").replace(/[?#].*$/, "") + "?url=" + encodeURIComponent(target);
+  return proxy.replace(/\/+$/, "").replace(/[?#].*$/, "");
+}
+function rdEndpoint(target) {
+  const base = proxyBase();
+  return base ? base + "?url=" + encodeURIComponent(target) : target;
+}
+async function resolveViaComet(playbackUrl) {
+  const base = proxyBase();
+  if (!base) return null;
+  try {
+    const r = await fetch(base + "/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ url: playbackUrl }),
+      credentials: "omit",
+    });
+    const text = await r.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch {}
+    if (!body || typeof body !== "object") return { ok: false, step: "comet", status: r.status, error: "Proxy resolve HTTP " + r.status };
+    if (!body.status && !r.ok) body.status = r.status;
+    return body;
+  } catch (e) {
+    return { ok: false, step: "comet", error: e?.message || "fetch failed" };
+  }
+}
+async function rdCall(token, step, method, path, params) {
+  try { return await rdRequest(token, method, path, params); }
+  catch (e) { e.step = step; throw e; }
 }
 async function rdRequest(token, method, path, params) {
   const target = "https://api.real-debrid.com/rest/1.0" + path;
@@ -1180,6 +1303,40 @@ async function clientIp() {
   }
   return "";
 }
+// Follow Comet in this browser. The stream list was fetched from this IP, so
+// public ElfHosted will not return the wrong-IP slate to this call. The final
+// Real-Debrid download host sends no ACAO, so a real file rejects the fetch
+// and response.url stays hidden. no-cors cannot reveal it either.
+async function resolveOnPhone(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  const once = async (method, mode, headers) => {
+    const r = await fetch(url, { method, redirect: "follow", mode, headers, credentials: "omit", signal: ctrl.signal });
+    let size = 0, complete = false, contentType = "";
+    if (r.type !== "opaque" && r.type !== "opaqueredirect") {
+      contentType = r.headers.get("content-type") || "";
+      const total = /\/(\d+)\s*$/.exec(r.headers.get("content-range") || "");
+      size = total ? +total[1] : (r.status === 200 ? +(r.headers.get("content-length") || 0) : 0);
+      complete = size > 0 && (!!total || r.status === 200);
+    }
+    try { await r.body?.cancel(); } catch {}
+    return { requestUrl: url, url: r.url || "", status: r.status, type: r.type, contentType, size, complete, opaque: r.type === "opaque" || r.type === "opaqueredirect" };
+  };
+  try {
+    try { return await once("GET", "cors", { Range: "bytes=0-0" }); }
+    catch (corsError) {
+      try { return await once("HEAD", "cors"); }
+      catch {
+        try {
+          const opaque = await once("GET", "no-cors");
+          return { ...opaque, opaque: true, unreadable: true, error: corsError?.message || "" };
+        } catch (e) {
+          return { requestUrl: url, unreadable: true, opaque: true, error: corsError?.message || e?.message || "fetch failed" };
+        }
+      }
+    }
+  } finally { clearTimeout(timer); }
+}
 async function probeStream(url) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 8000);
@@ -1193,6 +1350,39 @@ async function probeStream(url) {
     return { kind: "file", contentType, size, complete: size > 0 && (!!total || r.status === 200), status: r.status };
   } catch { return null; }
   finally { clearTimeout(t); }
+}
+function stepOf(path) {
+  if (path.startsWith("/torrents/addMagnet")) return "addMagnet";
+  if (path.startsWith("/torrents/selectFiles")) return "selectFiles";
+  if (path.startsWith("/torrents/info")) return "info";
+  if (path.startsWith("/unrestrict/")) return "unrestrict";
+  if (path.startsWith("/streaming/transcode")) return "transcode";
+  return "rd";
+}
+async function playResolvedId(token, plan, safari) {
+  const ids = [plan.id];
+  let last = null;
+  const transcode = async id => {
+    const body = await rdCall(token, "transcode", "GET", "/streaming/transcode/" + encodeURIComponent(id));
+    return KumoPlayback.pickTranscode(body, safari);
+  };
+  try {
+    const picked = await transcode(plan.id);
+    if (picked) return { ok: true, url: picked.url, type: picked.type };
+  } catch (e) { last = KumoPlayback.failRd(e); }
+  if (plan.download) {
+    try {
+      const un = await rdCall(token, "unrestrict", "POST", "/unrestrict/link", { link: plan.download });
+      const again = [un?.id, KumoPlayback.idFromDownload(un?.download)].filter((v, i, a) => v && a.indexOf(v) === i && !ids.includes(v));
+      for (const id of again) {
+        try {
+          const picked = await transcode(id);
+          if (picked) return { ok: true, url: picked.url, type: picked.type };
+        } catch (e) { last = KumoPlayback.failRd(e); }
+      }
+    } catch (e) { last = KumoPlayback.failRd(e); }
+  }
+  return { ok: false, block: last || { kind: "unsupported", step: "transcode", message: "Real-Debrid didn't return a playable stream for Comet's file." } };
 }
 function streamContext(s, info) {
   const parts = KumoPlayback.playbackParts(s.url) || {};
@@ -1212,10 +1402,6 @@ async function prepareStream(s, info) {
     if (container && !P.browserCanPlay(container, safari)) return { skip: true, kind: "unsupported", message: mkvHelp(false), externalUrl: s.url };
     return { url: s.url, type: P.sourceType(s.url) };
   }
-  if (P.isDebridResolver(s.url)) {
-    const klass = P.classifyProbe(await probeStream(s.url), s);
-    if (klass === "status") return { skip: true, kind: "status", message: "Real-Debrid blocked that file, so the add-on sent an error clip instead of the episode." };
-  }
   const ctx = streamContext(s, info);
   const auth = rdToken();
   const proxy = rdProxy();
@@ -1224,37 +1410,95 @@ async function prepareStream(s, info) {
     const explained = P.explainFailure({ hash: ctx.hash, token: !!auth, proxy: !!proxy, block });
     return { skip: true, kind: explained.kind, message: explained.message, detail: explained.detail, externalUrl: s.url };
   };
-  let block = null;
-  // A saved proxy is the only way the page can call Real-Debrid. Always try it
-  // when the browser can't play the file, even if an earlier call was blocked.
-  if ((P.isDebridResolver(s.url) || !directOk) && ctx.hash && auth && (proxy || !rdCorsBlocked)) {
-    const key = [ctx.hash, ctx.fileIndex, ctx.season, ctx.episode, safari ? 1 : 0].join(":");
-    if (rdPlayCache.has(key)) return { ...rdPlayCache.get(key), debrid: true };
-    const resolved = await P.resolveRealDebrid({ ...ctx, safari, clientIp: await clientIp(), request: (method, path, params) => rdRequest(auth.token, method, path, params) });
-    if (resolved.ok) { const prepared = { url: resolved.url, type: resolved.type, debrid: true }; rdPlayCache.set(key, prepared); return prepared; }
-    if (resolved.kind === "cors" && !proxy) rdCorsBlocked = true;
-    block = resolved;
+  const outside = (block) => {
+    const explained = P.explainFailure({ hash: ctx.hash, token: !!auth, proxy: !!proxy, block: block || { kind: "external", step: "phone", message: P.externalOnlyMessage } });
+    return { skip: true, openExternal: !P.isUncachedStream(s), kind: explained.kind, message: explained.message, detail: explained.detail, externalUrl: s.url };
+  };
+  // The phone can see Comet's error clip when the response stays on a host
+  // that sends CORS. A hop to Real-Debrid's download host does not.
+  if (P.isDebridResolver(s.url)) {
+    const klass = P.classifyProbe(await probeStream(s.url), s);
+    if (klass === "status") return giveUp({ kind: "status", step: "comet", message: "Comet's link is blocked by Real-Debrid (copyright filter)." });
   }
-  const hard = block && ["infringing", "status", "uncached", "rate", "auth", "ip", "proxy", "cors", "hash", "token"].includes(block.kind);
-  if (hard || !directOk) return giveUp(block);
+  const cacheKey = [ctx.hash || s.url, ctx.fileIndex, ctx.season, ctx.episode, safari ? 1 : 0].join(":");
+  const remember = (url, type) => { const prepared = { url, type, debrid: true }; rdPlayCache.set(cacheKey, prepared); return prepared; };
+  const playPlan = async plan => {
+    if (!auth || !proxy) return null;
+    const played = await playResolvedId(auth.token, plan, safari);
+    if (played.ok) return remember(played.url, played.type);
+    return giveUp(played.block);
+  };
+  const direct = P.rdDownload(s.url);
+  if (direct) {
+    const played = await playPlan(direct);
+    if (played?.url) return played;
+    if (played && ["infringing", "status", "auth", "rate"].includes(played.kind)) return played;
+    if (directOk) {
+      const type = P.sourceType(s.url) || (container === "mp4" || container === "m4v" ? "video/mp4" : container === "webm" ? "video/webm" : container === "m3u8" ? "application/vnd.apple.mpegurl" : undefined);
+      return { url: s.url, type, debrid: true };
+    }
+    return outside();
+  }
+  if (P.isDebridResolver(s.url)) {
+    const phone = P.classifyPhoneFetch(await resolveOnPhone(s.url));
+    if (phone.action === "blocked") return giveUp(phone);
+    if (phone.action === "slate" || phone.action === "wrong-ip") return giveUp(phone);
+    if (phone.action === "transcode") {
+      const played = await playPlan(phone);
+      if (played?.url) return played;
+      if (played && ["infringing", "status", "auth", "rate"].includes(played.kind)) return played;
+    }
+    if (phone.action === "play") return { url: phone.url, type: phone.type, debrid: true, checkStatus: true };
+    // Private / self-hosted Comet is not IP-bound, so the worker can still
+    // read the download id. Public ElfHosted returns a wrong-IP slate here.
+    if (proxy) {
+      const plan = P.nextFromCometResolve(await resolveViaComet(s.url));
+      if (plan.action === "blocked" || plan.action === "slate" || plan.action === "wrong-ip") {
+        if (plan.action === "wrong-ip") return outside();
+        return giveUp(plan);
+      }
+      if (plan.action === "transcode") {
+        const played = await playPlan(plan);
+        if (played?.url) return played;
+        if (played && ["infringing", "status", "auth", "rate"].includes(played.kind)) return played;
+      }
+    }
+    return outside();
+  }
+  if (!directOk) return outside();
   const type = P.sourceType(s.url) || (container === "mp4" || container === "m4v" ? "video/mp4" : container === "webm" ? "video/webm" : container === "m3u8" ? "application/vnd.apple.mpegurl" : undefined);
-  return { url: s.url, type, debrid: true, checkStatus: P.isDebridResolver(s.url) };
+  return { url: s.url, type, debrid: true, checkStatus: false };
 }
 
 function failureHtml(attempts, lastExternal) {
   const kinds = attempts.map(a => a.kind).filter(Boolean);
+  const blocked = kinds.length && kinds.every(k => k === "status" || k === "infringing");
   let title = "This source won't play", body = attempts.find(a => a.message)?.message || "None of the sources started.";
-  if (kinds.length && kinds.every(k => k === "status" || k === "infringing")) {
+  if (blocked) {
     title = "Real-Debrid blocked these files";
     body = "The add-on sent its own error clip instead of the episode, usually because Real-Debrid's copyright filter refused the file. Try another add-on.";
-  } else if (kinds.includes("proxy")) title = "Real-Debrid proxy failed";
+  } else if (kinds.includes("wrong-ip")) {
+    title = "Opened on a different connection";
+    body = "Comet tied this link to another connection. It is not blocked. Load the episode on this phone, then open it in Infuse or VLC.";
+  } else if (kinds.includes("slate")) title = "That link isn't a video";
+  else if (kinds.includes("external")) {
+    title = "Open in another app";
+    body = KumoPlayback.externalOnlyMessage;
+  } else if (kinds.includes("refused")) title = "Real-Debrid refused the request";
+  else if (kinds.includes("proxy")) title = "Real-Debrid proxy failed";
   else if (kinds.includes("hash")) title = "Couldn't read this source";
   else if (kinds.includes("auth") || kinds.includes("token")) title = "Real-Debrid token was refused";
   else if (kinds.includes("uncached") && !kinds.some(k => k === "cors" || k === "unsupported")) title = "Not cached on Real-Debrid";
   else if (kinds.some(k => k === "cors" || k === "unsupported")) title = "Safari can't play this file";
   const detail = [...attempts].reverse().map(a => a.detail).find(Boolean);
   const diag = detail ? `<p class="diag">${esc(detail)}</p>` : "";
-  const ext = lastExternal ? `<div class="ext">${KumoPlayback.externalPlayers(lastExternal).map(p => `<button class="btn ghost" type="button" data-ext="${esc(p.href)}">${esc(p.name)}</button>`).join("")}<button class="btn ghost" type="button" id="copyStream" data-url="${esc(lastExternal)}">Copy link</button></div>` : "";
+  let ext = "";
+  if (lastExternal && !blocked) {
+    const players = KumoPlayback.externalPlayers(lastExternal);
+    const chosen = prefs.externalPlayer || "infuse";
+    const ordered = [...players.filter(p => p.id === chosen), ...players.filter(p => p.id !== chosen)];
+    ext = `<div class="ext">${ordered.map(p => `<button class="btn ${p.id === chosen ? "primary" : "ghost"}" type="button" data-ext="${esc(p.href)}">${esc(p.name)}</button>`).join("")}<button class="btn ghost" type="button" id="copyStream" data-url="${esc(lastExternal)}">Copy link</button></div>`;
+  }
   return `<div class="err"><b>${esc(title)}</b><p>${esc(body)}</p>${diag}${ext}</div>`;
 }
 function showStageMessage(mount, info, html) {
@@ -1292,7 +1536,9 @@ async function playFromList(rows, startIndex, info, mount, opts) {
   const attempts = [];
   const seen = new Set();
   let lastExternal = "";
+  let externalCandidate = "";
   if (explicit && mount) highlightSource(startIndex);
+  const noteVerdict = (url, kind) => { if (url && kind) rememberVerdict(url, kind); };
   for (let n = 0; n < order.length; n++) {
     if (gen !== playGen) return;
     const row = order[n];
@@ -1304,21 +1550,45 @@ async function playFromList(rows, startIndex, info, mount, opts) {
     if (gen !== playGen) return;
     if (prepared.external) { window.open(prepared.external, "_blank", "noopener"); return; }
     if (prepared.externalUrl) lastExternal = prepared.externalUrl;
-    if (prepared.skip) { attempts.push(prepared); if (explicit) break; continue; }
+    if (prepared.skip) {
+      const hard = prepared.kind === "status" || prepared.kind === "infringing" || prepared.kind === "blocked";
+      if (hard) noteVerdict(row.s.url, "blocked");
+      else if (prepared.kind === "slate") noteVerdict(row.s.url, "slate");
+      else if (prepared.kind === "wrong-ip") noteVerdict(row.s.url, "wrong-ip");
+      else if (prepared.openExternal && row.s.url) {
+        noteVerdict(row.s.url, "external");
+        if (explicit) { handoffExternal(mount, info, row.s.url); return; }
+        if (!externalCandidate) externalCandidate = row.s.url;
+      }
+      attempts.push(prepared);
+      if (explicit) break;
+      continue;
+    }
     const result = await play(row.s, info, row.a?.key, mount, prepared);
     if (gen !== playGen) return;
     if (result.status === "ok") {
+      if (row.s.url) noteVerdict(row.s.url, "play");
       if (mount) highlightSource(row.i);
       if ($("#wtStatus")) $("#wtStatus").textContent = "";
       return;
     }
     teardown();
+    const cachedFail = result.reason !== "status" && KumoPlayback.isCachedStream(row.s) && row.s.url;
+    if (result.reason === "status") noteVerdict(row.s.url, "blocked");
+    else if (cachedFail) noteVerdict(row.s.url, "external");
+    else noteVerdict(row.s.url, "fail");
     attempts.push({ kind: result.reason, message: result.reason === "status" ? "Real-Debrid blocked that file, so the add-on sent an error clip instead of the episode." : "That source didn't start.", detail: result.detail, externalUrl: row.s.url });
     if (row.s.url) lastExternal = row.s.url;
+    if (cachedFail) {
+      if (explicit) { handoffExternal(mount, info, row.s.url); return; }
+      if (!externalCandidate) externalCandidate = row.s.url;
+    }
     if (explicit) break;
     if ($("#wtStatus")) $("#wtStatus").textContent = "That source didn't play. Trying another…";
   }
   if (gen !== playGen) return;
+  const onlyBlocked = attempts.length && attempts.every(a => a.kind === "status" || a.kind === "infringing" || a.kind === "blocked" || a.kind === "slate");
+  if (externalCandidate && !onlyBlocked) { handoffExternal(mount, info, externalCandidate); return; }
   if ($("#wtStatus")) $("#wtStatus").textContent = "";
   showStageMessage(mount, info, failureHtml(attempts, lastExternal));
 }

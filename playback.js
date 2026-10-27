@@ -45,9 +45,9 @@
 
   function isDebridResolver(url) {
     const u = String(url || "");
-    // 40 hex, 32 char base32, or the 80-char hex-encoded form Comet sometimes keeps.
-    if (/\/playback\/[a-z2-7]{32}(?:\/|$|\?)/i.test(u)) return true;
-    if (/\/playback\/[a-f0-9]{40,80}(?:\/|$|\?)/i.test(u)) return true;
+    // Legacy Comet puts a hash in the path. Public ElfHosted Comet uses one long
+    // encrypted segment and no visible infohash. Both are resolver links.
+    if (/\/playback\/[^/?#]{16,}/i.test(u)) return true;
     if (/\/resolve\/[^?\s]*real-?debrid\//i.test(u)) return true;
     if (/\/real-?debrid\/[^/\s]+\/[a-f0-9]{40}(?:\/|$)/i.test(u)) return true;
     return false;
@@ -175,10 +175,13 @@
       if (fromGroup) return fromGroup;
     }
     const u = String(s?.url || "");
-    const m = u.match(/\/playback\/([a-z0-9]{32,80})(?:\/|$|\?)/i)
-      || u.match(/\/real-?debrid\/[^/]+\/([a-f0-9]{40})(?:\/|$)/i)
-      || u.match(/[?&](?:hash|infoHash|info_hash)=([a-z0-9]{32,80})\b/i);
-    return m ? normalizeInfoHash(m[1]) : "";
+    // Only the old /playback/{hash}/{service}/{file}/{season}/{episode} shape.
+    // A single encrypted /playback/<blob> segment is not a torrent id.
+    const legacy = u.match(/\/playback\/([a-z0-9]{32,80})\/[^/?#]+\/[^/?#]+\/[^/?#]+\/[^/?#]+/i);
+    const rd = u.match(/\/real-?debrid\/[^/]+\/([a-f0-9]{40})(?:\/|$)/i);
+    const q = u.match(/[?&](?:hash|infoHash|info_hash)=([a-z0-9]{32,80})\b/i);
+    const raw = (legacy || rd || q || [])[1];
+    return raw ? normalizeInfoHash(raw) : "";
   }
 
   function playbackParts(url) {
@@ -204,11 +207,18 @@
     const proxy = !!info?.proxy;
     const block = info?.block || null;
     const asksForProxy = block && (block.kind === "cors" || /add a proxy|blocks websites/i.test(block.message || ""));
+    const cometBlocked = block && (block.kind === "status" || (block.kind === "infringing" && (block.step === "comet" || block.step === "phone")));
     let kind, message;
-    if (!hash) {
+    if (cometBlocked) {
+      kind = block.kind;
+      message = block.message || "Comet's link is blocked by Real-Debrid (copyright filter).";
+    } else if (block?.kind === "external" || block?.kind === "wrong-ip" || block?.kind === "slate") {
+      kind = block.kind;
+      message = block.message || (block.kind === "external" ? EXTERNAL_ONLY : "Comet didn't return a playable stream.");
+    } else if (!hash && !block?.message) {
       kind = "hash";
       message = "Couldn't find the torrent hash in this source.";
-    } else if (!token) {
+    } else if (!token && !block?.message) {
       kind = "token";
       message = "No Real-Debrid token found.";
     } else if (proxy && asksForProxy) {
@@ -224,7 +234,10 @@
       kind = "unsupported";
       message = "Real-Debrid didn't return a playable stream.";
     }
-    const bits = ["kind " + kind, "hash " + (hash ? "yes" : "no"), "token " + (token ? "yes" : "no"), "proxy " + (proxy ? "yes" : "no")];
+    const step = block?.step || info?.step || "";
+    const bits = ["kind " + kind];
+    if (step) bits.push("step " + step);
+    bits.push("hash " + (hash ? "yes" : "no"), "token " + (token ? "yes" : "no"), "proxy " + (proxy ? "yes" : "no"));
     const status = block?.status || info?.status;
     if (status) bits.push("HTTP " + status);
     const err = block?.error || info?.error;
@@ -384,6 +397,106 @@
     return m ? m[1] : "";
   }
 
+  function rdDownload(url) {
+    let u;
+    try { u = new URL(String(url || "")); }
+    catch { return null; }
+    if (!/(^|\.)download\.real-debrid\.com$/i.test(u.hostname)) return null;
+    const id = idFromDownload(u.href);
+    if (!id) return null;
+    let filename = "";
+    const name = u.pathname.match(/\/d\/[^/]+\/([^/]+)/);
+    if (name) { try { filename = decodeURIComponent(name[1]); } catch { filename = name[1]; } }
+    return { id, download: u.href, filename };
+  }
+
+  // Public ElfHosted Comet plays its warning from slate.elfhosted.com.
+  // Any hop there is the slate, including a 206 of slate.mp4. The title=
+  // query is the reason. "Opened on a different connection" is the IP lock
+  // (https://docs.elfhosted.com/m/wrong-ip), not Real-Debrid's copyright filter.
+  function slateFromUrl(url) {
+    let u;
+    try { u = new URL(String(url || "")); }
+    catch { return null; }
+    if (!/(^|\.)slate\.elfhosted\.com$/i.test(u.hostname)) return null;
+    const title = u.searchParams.get("title") || "";
+    const docs = u.searchParams.get("url") || "";
+    const wrong = /different connection|wrong[ -]?ip/i.test(`${title} ${docs}`);
+    const infringing = /INFRINGING_FILE|couldn'?t start this stream/i.test(title);
+    if (wrong && !infringing) {
+      return {
+        action: "wrong-ip", kind: "wrong-ip", step: "comet", blocked: false,
+        reason: title || "Opened on a different connection",
+        message: "Comet opened this link on a different connection. It is not blocked. Load the sources on this phone, then play in Infuse or VLC.",
+      };
+    }
+    if (infringing) {
+      return {
+        action: "blocked", kind: "infringing", step: "comet", blocked: true,
+        reason: title || "INFRINGING_FILE",
+        message: "Comet's link is blocked by Real-Debrid (copyright filter).",
+      };
+    }
+    return {
+      action: "slate", kind: "slate", step: "comet", blocked: false,
+      reason: title || "Comet error slate",
+      message: title || "Comet sent an error slate instead of the episode.",
+    };
+  }
+
+  // What a browser fetch of a Comet playback link can see.
+  //
+  // *.download.real-debrid.com does not send Access-Control-Allow-Origin
+  // (checked on 20.download.real-debrid.com: Server Lity, 403/404, no ACAO).
+  // fetch() that follows Comet onto that host rejects, so response.url is
+  // never readable for a real file. mode:"no-cors" stays opaque and its url
+  // is not the redirect target. HEAD hits the same CORS check. A readable
+  // landing on slate.elfhosted.com is the slate; a 206 from it is not a file.
+  const EXTERNAL_ONLY = "Comet's free public links only play in an outside player on this phone. Use Infuse or VLC.";
+
+  function classifyPhoneFetch(result) {
+    const requestUrl = String(result?.requestUrl || "");
+    const finalUrl = String(result?.url || "");
+    const readable = finalUrl && !result?.opaque && !result?.unreadable && result?.type !== "opaque" && result?.type !== "opaqueredirect";
+    if (readable) {
+      const rd = rdDownload(finalUrl);
+      if (rd) return { action: "transcode", id: rd.id, download: rd.download, filename: rd.filename, step: "phone" };
+      const slate = slateFromUrl(finalUrl);
+      if (slate) return slate;
+      const video = /video|mp4|mpegurl|octet-stream/i.test(result.contentType || "");
+      const same = requestUrl && finalUrl.split("#")[0] === requestUrl.split("#")[0];
+      if (same && video && result.complete && result.size > 0 && result.size < 6_000_000) {
+        return { action: "blocked", kind: "status", step: "phone", message: "Comet's link is blocked by Real-Debrid (copyright filter)." };
+      }
+      const type = sourceType(finalUrl);
+      if (type && result.status && result.status < 400) return { action: "play", url: finalUrl, type, step: "phone" };
+    }
+    const why = result?.opaque || result?.type === "opaque" ? "no-cors" : "cors";
+    return {
+      action: "external", kind: "external", step: "phone", reason: why,
+      error: why === "no-cors" ? "no-cors response.url is not the redirect target" : "download host sends no CORS",
+      message: EXTERNAL_ONLY,
+    };
+  }
+
+  // Hidden until "Show all sources": uncached, copyright slates, other slates,
+  // and wrong-IP warnings. A source that only plays in Infuse stays listed.
+  function listDisposition(stream, verdict) {
+    const v = String(verdict || "");
+    if (v === "blocked" || v === "infringing" || v === "status") return "blocked";
+    if (v === "slate") return "slate";
+    if (v === "wrong-ip") return "wrong-ip";
+    if (v === "fail") return "failed";
+    if (isUncachedStream(stream)) return "uncached";
+    return "ready";
+  }
+
+  function hideFromList(stream, verdict, showAll) {
+    if (showAll) return false;
+    const d = listDisposition(stream, verdict);
+    return d === "blocked" || d === "slate" || d === "uncached" || d === "wrong-ip";
+  }
+
   function rdErrorKind(status, code, message) {
     const m = String(message || "").toLowerCase();
     const c = +code || 0;
@@ -405,6 +518,8 @@
     return links.length === 1 ? links[0] : "";
   }
 
+  // Not used on the default playback path. addMagnet from a Cloudflare IP
+  // returns HTTP 451 for files Comet already unrestricted. Kept for tests.
   // `request(method, path, params)` performs one Real-Debrid REST call and
   // returns the parsed JSON, or throws an Error with .status, .code, .cors.
   async function resolveRealDebrid(opts) {
@@ -416,14 +531,14 @@
     let added;
     try {
       added = await request("POST", "/torrents/addMagnet", withIp({ magnet: "magnet:?xt=urn:btih:" + hash }));
-    } catch (e) { return failRd(e); }
+    } catch (e) { return failRd(Object.assign(e, { step: "addMagnet" })); }
     const id = added?.id;
     if (!id) return { ok: false, kind: "unavailable", message: "Real-Debrid didn't accept that torrent." };
 
     let info;
     try { info = await waitForFiles(request, id); }
-    catch (e) { return failRd(e); }
-    if (/magnet_error|error|dead|virus/.test(info.status || "")) return { ok: false, kind: "unavailable", message: "Real-Debrid couldn't open that torrent." };
+    catch (e) { return failRd(Object.assign(e, { step: "info" })); }
+    if (/magnet_error|error|dead|virus/.test(info.status || "")) return { ok: false, kind: "unavailable", step: "info", message: "Real-Debrid couldn't open that torrent." };
 
     const file = pickTorrentFile(info.files, opts);
     if (!file) return { ok: false, kind: "unavailable", message: "Couldn't find this episode inside that release." };
@@ -432,10 +547,10 @@
     if (!already) {
       try { await request("POST", "/torrents/selectFiles/" + id, withIp({ files: String(file.id) })); }
       catch (e) {
-        if (rdErrorKind(e.status, e.code, e.message) !== "error" || +e.code !== 31) return failRd(e);
+        if (rdErrorKind(e.status, e.code, e.message) !== "error" || +e.code !== 31) return failRd(Object.assign(e, { step: "selectFiles" }));
       }
       try { info = await waitForFiles(request, id); }
-      catch (e) { return failRd(e); }
+      catch (e) { return failRd(Object.assign(e, { step: "info" })); }
     }
 
     if (info.status && info.status !== "downloaded" && !(info.links || []).length) {
@@ -446,14 +561,14 @@
 
     let un;
     try { un = await request("POST", "/unrestrict/link", withIp({ link })); }
-    catch (e) { return failRd(e); }
-    if (!un || un.error) return failRd(Object.assign(new Error(un?.error || "unrestrict"), { status: 400, code: un?.error_code }));
+    catch (e) { return failRd(Object.assign(e, { step: "unrestrict" })); }
+    if (!un || un.error) return failRd(Object.assign(new Error(un?.error || "unrestrict"), { status: 400, code: un?.error_code, step: "unrestrict" }));
 
     const ids = [un.id, idFromDownload(un.download)].filter((v, i, a) => v && a.indexOf(v) === i);
     let transcode = null, transcodeError = null;
     for (const tid of ids) {
       try { transcode = await request("GET", "/streaming/transcode/" + encodeURIComponent(tid)); break; }
-      catch (e) { transcodeError = e; }
+      catch (e) { e.step = "transcode"; transcodeError = e; }
     }
     const picked = pickTranscode(transcode, !!opts.safari);
     if (picked) return { ok: true, url: picked.url, type: picked.type, filename: un.filename || file.path || "" };
@@ -463,7 +578,7 @@
     if (un.download && browserCanPlay(container, !!opts.safari)) return { ok: true, url: un.download, type: sourceType(un.download) || "video/mp4", filename: name };
     if (transcodeError) {
       const kind = rdErrorKind(transcodeError.status, transcodeError.code, transcodeError.message);
-      if (kind === "infringing" || kind === "auth" || kind === "rate") return failRd(transcodeError);
+      if (kind === "infringing" || kind === "auth" || kind === "rate") return failRd(Object.assign(transcodeError, { step: "transcode" }));
     }
     return { ok: false, kind: "unsupported", message: "Real-Debrid only has the original " + (container || "MKV").toUpperCase() + ", which this browser can't play.", filename: name };
   }
@@ -482,10 +597,16 @@
   }
 
   function failRd(e) {
-    const kind = e?.proxy ? "proxy" : e?.cors ? "cors" : rdErrorKind(e?.status, e?.code, e?.message);
+    const step = e?.step || "";
+    // A 451 from Kumo's own addMagnet/unrestrict is not Comet's error slate.
+    // Only step "comet" stays "infringing", which is what the player calls blocked.
+    let kind = e?.proxy ? "proxy" : e?.cors ? "cors" : rdErrorKind(e?.status, e?.code, e?.message);
+    if (kind === "infringing" && step !== "comet") kind = "refused";
+    const where = step || "request";
     const message = {
       auth: "Real-Debrid refused the token. Reconnect it in the add-on, or paste a new token on the Add-ons page.",
-      infringing: "Real-Debrid blocked that file (copyright filter).",
+      infringing: "Comet's link is blocked by Real-Debrid (copyright filter).",
+      refused: "Real-Debrid refused Kumo's own " + where + " call" + (e?.status ? " (HTTP " + e.status + ")" : "") + ". Comet's link was not blocked.",
       rate: "Real-Debrid asked us to slow down. Wait a moment and try again.",
       cors: "Real-Debrid's API blocks browsers. Add the proxy URL on the Add-ons page.",
       proxy: "The saved proxy didn't get an answer from Real-Debrid.",
@@ -493,15 +614,32 @@
       unavailable: "Real-Debrid doesn't have a playable copy of that file.",
     }[kind] || "Real-Debrid didn't return a playable stream.";
     const error = e?.cause?.message || (kind === "proxy" || kind === "cors" ? e?.message : "") || "";
-    return { ok: false, kind, message, status: e?.status || 0, error };
+    return { ok: false, kind, message, status: e?.status || 0, error, step };
+  }
+
+  // Worker /resolve result. No magnet step: a missing id means play outside,
+  // unless the body is a real slate. wrong-ip is never "blocked".
+  function nextFromCometResolve(body) {
+    if (body?.kind === "wrong-ip") {
+      const slate = slateFromUrl("https://slate.elfhosted.com/slate.m3u8?title=" + encodeURIComponent(body.reason || "Opened on a different connection"));
+      return { ...slate, status: body.status || 0, step: "comet" };
+    }
+    if (body?.kind === "slate") {
+      return { action: "slate", kind: "slate", step: "comet", status: body.status || 0, reason: body.reason || "Comet error slate", message: body.reason || "Comet sent an error slate instead of the episode." };
+    }
+    if (body?.blocked) {
+      return { action: "blocked", kind: "infringing", step: "comet", status: body.status || 0, reason: body.reason || "INFRINGING_FILE", message: "Comet's link is blocked by Real-Debrid (copyright filter)." };
+    }
+    if (body?.ok && body.id) return { action: "transcode", id: String(body.id), download: body.download || "", filename: body.filename || "", step: "comet" };
+    return { action: "external", kind: "external", step: body?.step || "comet", status: body?.status || 0, error: body?.error || "", message: EXTERNAL_ONLY };
   }
 
   function externalPlayers(url) {
     const enc = encodeURIComponent(url);
     return [
-      { name: "VLC", href: "vlc-x-callback://x-callback-url/stream?url=" + enc },
-      { name: "Infuse", href: "infuse://x-callback-url/play?url=" + enc },
-      { name: "Outplayer", href: "outplayer://" + url },
+      { id: "infuse", name: "Infuse", href: "infuse://x-callback-url/play?url=" + enc },
+      { id: "vlc", name: "VLC", href: "vlc-x-callback://x-callback-url/stream?url=" + enc },
+      { id: "outplayer", name: "Outplayer", href: "outplayer://" + url },
     ];
   }
 
@@ -509,8 +647,9 @@
     containerOf, browserCanPlay, isDebridResolver, isDirectDebridFile, isDebridStream,
     isCachedStream, isUncachedStream, rankStream, orderStreams, playbackOrder, hashOf,
     playbackParts, sourceType, kindLabel, classifyProbe, tokenFromUrl, tokenFromAddons,
-    pickTorrentFile, pickTranscode, idFromDownload, rdErrorKind, resolveRealDebrid, externalPlayers,
-    normalizeInfoHash, explainFailure,
+    pickTorrentFile, pickTranscode, idFromDownload, rdDownload, rdErrorKind, resolveRealDebrid, externalPlayers,
+    normalizeInfoHash, explainFailure, failRd, nextFromCometResolve, slateFromUrl, classifyPhoneFetch,
+    listDisposition, hideFromList, externalOnlyMessage: EXTERNAL_ONLY,
   };
   root.KumoPlayback = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

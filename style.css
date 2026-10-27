@@ -273,7 +273,9 @@ h1,h2,h3{font-weight:400;margin:0}
 .wt-src.on{background:var(--logo);border-color:var(--logo);color:#000}
 .wt-src.on small{color:rgb(0 0 0/.7)}
 .wt-src.on .dot{background:#000;color:var(--logo)}
-.wt-src:disabled{opacity:.4}
+.wt-src.bad,.wt-src:disabled{opacity:.45}
+.wt-player{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:14px}
+.wt-player select{background:var(--raise);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font:inherit}
 .wt-air{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin-bottom:20px;font-size:14px;color:var(--muted)}
 a.ep{text-align:center;text-decoration:none;color:inherit}
 .wt-report{margin-top:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:13px;color:var(--muted)}
@@ -295,8 +297,19 @@ a.ep{text-align:center;text-decoration:none;color:inherit}
 .player-stage .err .diag,.pv-holder .err .diag{margin-top:8px;font-size:11px;line-height:1.35;color:rgb(255 255 255/.62);word-break:break-word}
 .player-stage .err .ext,.pv-holder .err .ext{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:12px}
 .player-stage .err .btn,.pv-holder .err .btn{color:#fff;border-color:rgb(255 255 255/.35)}
+.player-stage .err .btn.primary,.pv-holder .err .btn.primary{background:#ff8a1f;color:#1a1008;border:0}
 
-/* Splash animation lives in index.html so a late style.css cannot restart it. */
+/* Opening splash. A still 200px K, centred on the full viewport (no safe-area
+   shift) so it lines up with the iOS startup images. Stays at least 0.8s and
+   at most 2.5s, then a quick fade. Cold loads only. */
+.splash{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;background:#000}
+.splash-k{width:200px;height:200px;flex:none}
+.splash.splash-out{animation:splash-fade .2s ease forwards}
+@keyframes splash-fade{to{opacity:0;visibility:hidden}}
+@media (prefers-reduced-motion:reduce){
+  #splash.splash.splash-out{animation:splash-fade .14s linear forwards!important}
+}
+html.splash-skip #splash{display:none!important}
 .card:active,.ep:active,.btn:active,.wt-src:active,.stream:active,.dock-item:active,.vrow:active,.icon-btn:active,.note-row:active{opacity:.72}
 .eps>.ep,.streams>.stream,.wt-grid>.wt-src{content-visibility:auto;contain-intrinsic-size:auto 48px}
 .vlist>.vrow{content-visibility:auto;contain-intrinsic-size:auto 84px}
