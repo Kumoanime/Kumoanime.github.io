@@ -18,7 +18,9 @@ let watchlist = store.get("watchlist", {}); // route -> {route,title,poster,adde
 let removed = store.get("removed", {});     // route -> time removed, so a sync doesn't bring it back
 let progress = store.get("progress", {});   // videoKey -> {t,d,updated,route,title,poster,label,ep}
 let builtinOff = store.get("builtinOff", {});
+let rdSettings = store.get("rd", {}); // {token, proxy} — token is optional; never committed
 const saveAddons = () => store.set("addons", addons);
+const saveRd = patch => { rdSettings = { ...rdSettings, ...patch }; store.set("rd", rdSettings); };
 
 let tt;
 function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; t.style.display = ""; clearTimeout(tt); tt = setTimeout(() => { t.hidden = true; t.style.display = "none"; }, 2600); }
@@ -426,12 +428,12 @@ function renderStreams(box, results, info) {
   const rows = [];
   for (const r of results) for (const s of r.streams) rows.push({ a: r.a, s });
   const failed = results.filter(r => r.failed).map(r => r.a.manifest.name);
-  const kind = s => s.ytId ? "YouTube" : s.url ? (/\.m3u8/i.test(s.url) ? "HLS" : "Video") : s.externalUrl ? "Opens site" : s.infoHash ? "Torrent" : "Unknown";
+  const kind = s => KumoPlayback.kindLabel(s) || "Unknown";
   box.innerHTML = `<div class="streams"><h3>${esc(info.short)}</h3>
     ${rows.length ? rows.map((x, i) => `<button class="stream" data-i="${i}"><div><b>${esc(x.s.name || x.a.manifest.name)}</b><span>${esc(x.s.title || x.s.description || "")}</span></div><span class="kind">${kind(x.s)}</span></button>`).join("")
       : `<p class="note">None of your add-ons have a source for this yet. ${addons.length ? "" : "Install an add-on under Add-ons to get episode sources."}</p>`}
     ${failed.length ? `<p class="note">No answer from: ${failed.map(esc).join(", ")}.</p>` : ""}</div>`;
-  box.querySelectorAll("[data-i]").forEach(b => b.onclick = () => play(rows[+b.dataset.i].s, info, rows[+b.dataset.i].a.key));
+  box.querySelectorAll("[data-i]").forEach(b => b.onclick = () => playFromList(rows, +b.dataset.i, info));
 }
 
 function toggleWatch(route, title, poster) {
@@ -462,6 +464,7 @@ function viewAddons() {
       <p class="note">A repository is a link to a list of add-ons. Add one to browse what's in it.</p>
       <form class="field" id="repoForm"><input id="repoUrl" placeholder="https://example.com/repo.json" inputmode="url" autocomplete="off"><button class="btn">Add</button></form>
     </section>
+    ${rdSection()}
     ${section("Installed", all.map((a, i) => `
       <div class="addon">${a.manifest.logo ? `<img src="${esc(a.manifest.logo)}" alt="">` : `<div class="logo-ph">${esc((a.manifest.name || "?")[0])}</div>`}
         <div class="info"><b>${esc(a.manifest.name)}</b><p>${esc(a.manifest.description || "")}</p>
@@ -475,6 +478,18 @@ function viewAddons() {
         <div class="ctrl">${has ? `<span class="tag on">Installed</span>` : `<button class="btn small" data-install="${esc(e.url)}">Install</button>`}</div></div>`;
     }).join("") + `<button class="btn ghost small" data-unrepo="${esc(r.url)}">Remove repository</button>`, "Repository")).join("")}`;
 
+  $("#rdForm").onsubmit = e => {
+    e.preventDefault();
+    const token = $("#rdToken").value.trim(), proxy = $("#rdProxy").value.trim();
+    const patch = { proxy };
+    if (token) patch.token = token;
+    saveRd(patch);
+    rdPlayCache.clear();
+    rdCorsBlocked = false;
+    toast("Real-Debrid settings saved");
+    viewAddons();
+  };
+  if ($("#rdClear")) $("#rdClear").onclick = () => { saveRd({ token: "" }); rdPlayCache.clear(); rdCorsBlocked = false; toast("Forgot the pasted token"); viewAddons(); };
   const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); viewAddons(); } catch (e) { toast(e.message.includes("fetch") ? "Couldn't reach that link. Check it's https and online." : e.message); btn.disabled = false; } };
   $("#addonForm").onsubmit = e => { e.preventDefault(); const v = $("#addonUrl").value; if (v.trim()) busy(e.submitter || e.target.querySelector("button"), () => installAddon(v)); };
   $("#repoForm").onsubmit = e => { e.preventDefault(); const v = $("#repoUrl").value; if (v.trim()) busy(e.submitter || e.target.querySelector("button"), () => addRepo(v)); };
@@ -532,7 +547,7 @@ async function viewWatch(id, ep) {
   for (const r of results) for (const st of r.streams) rows.push({ a: r.a, s: st, audio: audioOf(st) });
   const failed = results.filter(r => r.failed).map(r => r.a.manifest.name);
   const groups = [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"], ["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]];
-  const kind = st => st.ytId ? "YouTube" : st.url ? (/\.m3u8/i.test(st.url) ? "HLS" : "Video") : st.externalUrl ? "Opens site" : st.infoHash ? "Torrent" : "";
+  const kind = st => KumoPlayback.kindLabel(st);
   $("#wtSources").innerHTML = rows.length ? groups.map(([g, label, icon]) => {
     const list = rows.map((r, i) => ({ ...r, i })).filter(r => r.audio === g);
     return list.length ? `<div class="wt-group"><div class="wt-group-h"><span class="wt-badge">${icon}</span>${label}</div><div class="wt-grid">${list.map(r =>
@@ -540,19 +555,14 @@ async function viewWatch(id, ep) {
   }).join("") : `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet. Try again later or add another add-on." : `You haven't installed any add-ons. <a href="#/addons">Open Add-ons</a> to add one.`}</div>`;
   if (report.length) $("#wtSources").insertAdjacentHTML("beforeend", `<details class="wt-report"${rows.some(r => playable(r.s)) ? "" : " open"}><summary>Add-on status (${report.length})</summary><ul>${report.map(r => `<li><b>${esc(r.a.manifest.name)}</b> ${esc(r.why)}.</li>`).join("")}</ul></details>`);
 
-  const start = i => {
-    const r = rows[i];
-    app.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", +b.dataset.i === i));
-    if (r.s.externalUrl && !playable(r.s)) return window.open(r.s.externalUrl, "_blank", "noopener");
-    play(r.s, info, r.a.key, $("#watchStage"));
-  };
+  const start = i => playFromList(rows, i, info, $("#watchStage"));
   app.querySelectorAll(".wt-src").forEach(b => b.onclick = () => start(+b.dataset.i));
-  // prefer subbed, then whatever plays
-  const firstIdx = ["sub", "other", "dub"].map(g => rows.findIndex(r => r.audio === g && playable(r.s))).find(i => i >= 0);
-  if (firstIdx === undefined) { $("#wtStatus").textContent = rows.length ? "Pick a source below." : "No sources found."; $("#wtStart").hidden = true; return; }
+  // Subbed before dubbed, and a cached Real-Debrid source before an uncached one.
+  const first = KumoPlayback.playbackOrder(rows, null, { safari: isSafariPlayer() }).find(r => playable(r.s));
+  if (!first) { $("#wtStatus").textContent = rows.length ? "Pick a source below." : "No sources found."; $("#wtStart").hidden = true; return; }
   $("#wtStatus").textContent = "";
-  $("#wtStart").onclick = () => start(firstIdx);
-  if (autostart) start(firstIdx);
+  $("#wtStart").onclick = () => start(first.i);
+  if (autostart) start(first.i);
 }
 
 // ---------- player ----------
@@ -591,25 +601,208 @@ async function gatherSubs(s, info) {
   return list.filter(x => x.url && !seen.has(x.url) && seen.add(x.url));
 }
 
-// mount: an element on the page to play inside (the watch page); otherwise the full-screen overlay
-function play(s, info, addonKey, mount) {
-  if (s.externalUrl && !s.url && !s.ytId) { window.open(s.externalUrl, "_blank", "noopener"); return; }
-  teardown();
-  if (!mount) openShell(info.label);
-  current = { info, addonKey, mount };
-  const host = mount || $("#player");
-  let stage = $("#playerStage");
-  if (mount) { mount.classList.add("playing"); mount.querySelector(".pv-holder")?.remove(); mount.insertAdjacentHTML("beforeend", `<div class="pv-holder"></div>`); stage = mount.querySelector(".pv-holder"); }
-  if (!s.url && !s.ytId) {
-    stage.innerHTML = `<div class="err">${s.infoHash ? "This source is a torrent, which web browsers can't play. Pick a different source." : "This source has no playable link."}</div>`;
-    return;
+// ---------- Real-Debrid ----------
+// Safari plays HLS natively and does not play MKV. hls.js is only for browsers
+// without native HLS: forcing it on iPhone makes playback depend on CORS
+// headers Real-Debrid does not send.
+const nativeHls = !!document.createElement("video").canPlayType("application/vnd.apple.mpegurl");
+let playGen = 0, rdCorsBlocked = false, clientIpCache = "";
+const rdPlayCache = new Map();
+const cancelPlayback = () => { playGen++; };
+function isSafariPlayer() {
+  const ua = navigator.userAgent || "";
+  const iOS = /iP(hone|ad|od)/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return iOS || /^((?!chrome|android|crios|fxios|edg\/).)*safari/i.test(ua);
+}
+function rdToken() {
+  const manual = (rdSettings.token || "").trim();
+  if (manual) return { token: manual, from: "saved" };
+  return KumoPlayback.tokenFromAddons(addons);
+}
+function rdProxy() { return (rdSettings.proxy || "").trim(); }
+function rdSection() {
+  const found = KumoPlayback.tokenFromAddons(addons);
+  const saved = (rdSettings.token || "").trim();
+  const who = found && !saved ? `Using the Real-Debrid key already in your ${esc(found.from)} add-on.` : saved ? "Using the token pasted below." : "No Real-Debrid token found yet. Paste one, or install Comet from a link that still has your key in it.";
+  return `<section class="section"><div class="section-head"><h2>Real-Debrid on iPhone</h2></div>
+    <p class="note">Safari can't play the MKV files Real-Debrid hands out, so those sources stay black, spin, or show the add-on's error clip. Kumo asks Real-Debrid for an HLS stream instead. Their API blocks websites, so this needs a proxy address you run. The episode still streams straight from Real-Debrid, not through the proxy.</p>
+    <p class="note">${who}</p>
+    <form class="field" id="rdForm">
+      <input id="rdToken" type="password" autocomplete="off" placeholder="${saved ? "Token saved — paste a new one to replace" : "Real-Debrid API token"}">
+      <input id="rdProxy" type="url" inputmode="url" placeholder="https://your-name.workers.dev" value="${esc(rdSettings.proxy || "")}">
+      <button class="btn">Save</button>
+    </form>
+    ${saved ? `<button class="btn ghost small" id="rdClear" type="button">Forget pasted token</button>` : ""}
+    <p class="note">Deploy <code>rd-proxy/worker.js</code> (it only forwards calls to api.real-debrid.com) and paste the address above. The token stays in this browser.</p>
+  </section>`;
+}
+async function rdRequest(token, method, path, params) {
+  const target = "https://api.real-debrid.com/rest/1.0" + path;
+  const proxy = rdProxy();
+  const headers = { Authorization: "Bearer " + token, Accept: "application/json" };
+  let body;
+  if (params && method !== "GET") { headers["Content-Type"] = "application/x-www-form-urlencoded"; body = new URLSearchParams(params).toString(); }
+  const urls = proxy ? [proxy.replace(/\/+$/, "") + "?url=" + encodeURIComponent(target)] : [target];
+  let last;
+  for (const url of urls) {
+    try {
+      const r = await fetch(url, { method, headers, body, credentials: "omit" });
+      const text = await r.text();
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch {}
+      if (!r.ok) { const e = new Error(json?.error || "Real-Debrid HTTP " + r.status); e.status = r.status; e.code = json?.error_code; throw e; }
+      return json;
+    } catch (e) { if (e.status) throw e; last = e; }
   }
+  const e = new Error("cors"); e.cors = true; e.cause = last; throw e;
+}
+async function clientIp() {
+  if (clientIpCache) return clientIpCache;
+  for (const u of ["https://api64.ipify.org?format=json", "https://api.ipify.org?format=json"]) {
+    try { const j = await (await fetch(u, { credentials: "omit" })).json(); if (j.ip) return clientIpCache = j.ip; } catch {}
+  }
+  return "";
+}
+async function probeStream(url) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const r = await fetch(url, { method: "GET", headers: { Range: "bytes=0-2047" }, redirect: "manual", credentials: "omit", signal: ctrl.signal });
+    if (r.type === "opaqueredirect" || (r.status >= 300 && r.status < 400)) return { kind: "redirect", status: r.status };
+    const contentType = r.headers.get("content-type") || "";
+    const total = /\/(\d+)\s*$/.exec(r.headers.get("content-range") || "");
+    const size = total ? +total[1] : (r.status === 200 ? +(r.headers.get("content-length") || 0) : 0);
+    if (!r.ok && r.status !== 206) return { kind: "http", status: r.status, contentType, size, complete: false };
+    return { kind: "file", contentType, size, complete: size > 0 && (!!total || r.status === 200), status: r.status };
+  } catch { return null; }
+  finally { clearTimeout(t); }
+}
+function streamContext(s, info) {
+  const parts = KumoPlayback.playbackParts(s.url) || {};
+  return { hash: KumoPlayback.hashOf(s) || parts.hash, fileIndex: parts.fileIndex, season: parts.season, episode: parts.episode || info?.ep || null };
+}
+function mkvHelp(hasToken) {
+  return hasToken
+    ? "iPhone Safari can't play the original file (it's an MKV), so the picture stays black. Kumo can request an HLS stream from Real-Debrid, but their API blocks websites. Add a proxy URL on the Add-ons page. Or open this source in VLC or Infuse."
+    : "iPhone Safari can't play this MKV, so the picture stays black. On the Add-ons page, paste a Real-Debrid token and a proxy URL and Kumo will request an HLS stream instead. Or open this source in VLC or Infuse.";
+}
+async function prepareStream(s, info) {
+  const P = KumoPlayback, safari = isSafariPlayer(), container = P.containerOf(s);
+  if (s.ytId) return { youtube: true };
+  if (s.externalUrl && !s.url) return { external: s.externalUrl };
+  const debrid = P.isDebridStream(s) || P.isDirectDebridFile(s.url);
+  if (!debrid) {
+    if (container && !P.browserCanPlay(container, safari)) return { skip: true, kind: "unsupported", message: mkvHelp(false), externalUrl: s.url };
+    return { url: s.url, type: P.sourceType(s.url) };
+  }
+  if (P.isDebridResolver(s.url)) {
+    const klass = P.classifyProbe(await probeStream(s.url), s);
+    if (klass === "status") return { skip: true, kind: "status", message: "Real-Debrid blocked that file, so the add-on sent an error clip instead of the episode." };
+  }
+  const ctx = streamContext(s, info);
+  const auth = rdToken();
+  const needsWeb = P.isDebridResolver(s.url) || (container && !P.browserCanPlay(container, safari));
+  let block = null;
+  if (needsWeb && ctx.hash && auth && !(rdCorsBlocked && !rdProxy())) {
+    const key = [ctx.hash, ctx.fileIndex, ctx.season, ctx.episode, safari ? 1 : 0].join(":");
+    if (rdPlayCache.has(key)) return { ...rdPlayCache.get(key), debrid: true };
+    const resolved = await P.resolveRealDebrid({ ...ctx, safari, clientIp: await clientIp(), request: (method, path, params) => rdRequest(auth.token, method, path, params) });
+    if (resolved.ok) { const prepared = { url: resolved.url, type: resolved.type, debrid: true }; rdPlayCache.set(key, prepared); return prepared; }
+    if (resolved.kind === "cors") rdCorsBlocked = true;
+    if (["infringing", "uncached", "rate", "auth", "ip"].includes(resolved.kind)) return { skip: true, kind: resolved.kind, message: resolved.message, externalUrl: s.url };
+    block = resolved;
+  }
+  const directOk = container ? P.browserCanPlay(container, safari) : !safari;
+  if (!directOk) {
+    const message = block?.kind === "unavailable" && block.message ? block.message : mkvHelp(!!auth);
+    return { skip: true, kind: block?.kind || "unsupported", message, externalUrl: s.url };
+  }
+  const type = P.sourceType(s.url) || (container === "mp4" || container === "m4v" ? "video/mp4" : container === "webm" ? "video/webm" : container === "m3u8" ? "application/vnd.apple.mpegurl" : undefined);
+  return { url: s.url, type, debrid: true, checkStatus: P.isDebridResolver(s.url) };
+}
 
-  // Vidstack player with its default video layout (controls, gestures, settings, captions,
-  // PiP, AirPlay/Cast), plus Kumo's Skip intro / Next episode pills and auto-play countdown.
-  const src = s.ytId ? `youtube/${s.ytId}` : s.url;
-  const type = s.ytId ? undefined : /\.m3u8(\?|$)/i.test(s.url) ? "application/x-mpegurl" : /\.webm(\?|$)/i.test(s.url) ? "video/webm" : "video/mp4";
-  stage.innerHTML = `
+function failureHtml(attempts, lastExternal) {
+  const kinds = attempts.map(a => a.kind).filter(Boolean);
+  let title = "This source won't play", body = attempts.find(a => a.message)?.message || "None of the sources started.";
+  if (kinds.length && kinds.every(k => k === "status" || k === "infringing")) {
+    title = "Real-Debrid blocked these files";
+    body = "The add-on sent its own error clip instead of the episode, usually because Real-Debrid's copyright filter refused the file. Try another add-on.";
+  } else if (kinds.includes("auth")) title = "Real-Debrid token was refused";
+  else if (kinds.includes("uncached") && !kinds.some(k => k === "cors" || k === "unsupported")) title = "Not cached on Real-Debrid";
+  else if (kinds.some(k => k === "cors" || k === "unsupported")) title = "Safari can't play this file";
+  const ext = lastExternal ? `<div class="ext">${KumoPlayback.externalPlayers(lastExternal).map(p => `<button class="btn ghost" type="button" data-ext="${esc(p.href)}">${esc(p.name)}</button>`).join("")}<button class="btn ghost" type="button" id="copyStream" data-url="${esc(lastExternal)}">Copy link</button></div>` : "";
+  return `<div class="err"><b>${esc(title)}</b><p>${esc(body)}</p>${ext}</div>`;
+}
+function showStageMessage(mount, info, html) {
+  teardown();
+  let holder;
+  if (mount) {
+    mount.classList.add("playing");
+    mount.querySelector(".pv-holder")?.remove();
+    mount.insertAdjacentHTML("beforeend", `<div class="pv-holder">${html}</div>`);
+    holder = mount.querySelector(".pv-holder");
+  } else {
+    openShell(info?.label || "");
+    $("#playerStage").innerHTML = html;
+    holder = $("#playerStage");
+  }
+  holder.querySelectorAll("[data-ext]").forEach(b => b.onclick = () => { location.href = b.dataset.ext; });
+  const copy = holder.querySelector("#copyStream");
+  if (copy) copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(copy.dataset.url); toast("Link copied. Paste it into VLC if the app didn't open."); }
+    catch { toast("Couldn't copy the link."); }
+  };
+}
+async function playFromList(rows, startIndex, info, mount) {
+  const gen = ++playGen;
+  const order = KumoPlayback.playbackOrder(rows, startIndex, { safari: isSafariPlayer() });
+  const attempts = [];
+  let lastExternal = "";
+  for (let n = 0; n < order.length && attempts.length < 4; n++) {
+    if (gen !== playGen) return;
+    const row = order[n];
+    if (mount) app.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", +b.dataset.i === row.i));
+    if ($("#wtStatus")) $("#wtStatus").textContent = attempts.length ? "That source didn't play. Trying another…" : (KumoPlayback.isDebridStream(row.s) ? "Opening a browser-friendly stream…" : "");
+    const prepared = await prepareStream(row.s, info);
+    if (gen !== playGen) return;
+    if (prepared.external) { window.open(prepared.external, "_blank", "noopener"); return; }
+    if (prepared.externalUrl) lastExternal = prepared.externalUrl;
+    if (prepared.skip) { attempts.push(prepared); continue; }
+    const result = await play(row.s, info, row.a?.key, mount, prepared);
+    if (gen !== playGen) return;
+    if (result.status === "ok") { if ($("#wtStatus")) $("#wtStatus").textContent = ""; return; }
+    teardown();
+    attempts.push({ kind: result.reason, message: result.reason === "status" ? "Real-Debrid blocked that file, so the add-on sent an error clip instead of the episode." : "That source didn't start.", externalUrl: row.s.url });
+    if (row.s.url) lastExternal = row.s.url;
+    if ($("#wtStatus")) $("#wtStatus").textContent = "That source didn't play. Trying another…";
+  }
+  if (gen !== playGen) return;
+  if ($("#wtStatus")) $("#wtStatus").textContent = "";
+  showStageMessage(mount, info, failureHtml(attempts, lastExternal));
+}
+
+// mount: an element on the page to play inside (the watch page); otherwise the full-screen overlay.
+// Resolves {status:"ok"} once a real duration is known, or {status:"fail"} on error,
+// stall, or a debrid error clip. The caller tries the next source.
+function play(s, info, addonKey, mount, prepared) {
+  if (s.externalUrl && !s.url && !s.ytId && !prepared?.url) { window.open(s.externalUrl, "_blank", "noopener"); return Promise.resolve({ status: "ok" }); }
+  return new Promise(resolve => {
+    let settled = false, stallTimer = null;
+    const finish = (status, reason) => { if (settled) return; settled = true; clearTimeout(stallTimer); resolve({ status, reason }); };
+    teardown();
+    if (!mount) openShell(info.label);
+    current = { info, addonKey, mount };
+    let stage = $("#playerStage");
+    if (mount) { mount.classList.add("playing"); mount.querySelector(".pv-holder")?.remove(); mount.insertAdjacentHTML("beforeend", `<div class="pv-holder"></div>`); stage = mount.querySelector(".pv-holder"); }
+    const youtube = s.ytId && !prepared?.url;
+    const src = youtube ? `youtube/${s.ytId}` : (prepared?.url || s.url);
+    if (!src) {
+      stage.innerHTML = `<div class="err">${s.infoHash ? "This source is a torrent, which web browsers can't play. Pick a different source." : "This source has no playable link."}</div>`;
+      finish("fail", "none");
+      return;
+    }
+    const type = youtube ? undefined : (prepared?.type || KumoPlayback.sourceType(src));
+    stage.innerHTML = `
     <media-player class="kumo-player" id="vs" title="${esc(info.label)}" playsinline autoplay keep-alive>
       <media-provider></media-provider>
       <media-video-layout></media-video-layout>
@@ -619,19 +812,22 @@ function play(s, info, addonKey, mount) {
       </div>
       <div class="pv-count" id="pvCount" hidden></div>
     </media-player>`;
-  const vs = $("#vs");
-  // use Kumo's pinned hls.js instead of letting Vidstack fetch its own copy
-  vs.addEventListener("provider-change", e => { if (e.detail?.type === "hls" && window.Hls) e.detail.library = window.Hls; });
-  vs.src = type ? { src, type } : src;
-
-  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const badFormat = !s.ytId && /\.(mkv|avi|wmv|flv)(\?|$)/i.test(s.url) && (isIOS || /^((?!chrome|android).)*safari/i.test(navigator.userAgent));
-  const fail = msg => { clearTimeout(stallTimer); stage.querySelector(".err")?.remove(); stage.insertAdjacentHTML("beforeend", `<div class="err">${msg}</div>`); };
-  let started = false;
-  let stallTimer = setTimeout(() => { if (!started) fail(badFormat ? "This source is an MKV or similar file, which Safari on iPhone can't play. Pick another source." : "This source isn't loading. Pick another one, or try again later."); }, 20000);
-  vs.addEventListener("loaded-metadata", () => { started = true; clearTimeout(stallTimer); stage.querySelector(".err")?.remove(); });
-  vs.addEventListener("error", () => fail(badFormat ? "This source is an MKV or similar file, which Safari on iPhone can't play. Pick another source." : "This source wouldn't play. Pick another one."));
-  if (s.ytId) return; // trailers: no progress, intro or next-episode handling
+    const vs = $("#vs");
+    vs.addEventListener("provider-change", e => { if (e.detail?.type === "hls" && window.Hls && !nativeHls) e.detail.library = window.Hls; });
+    vs.src = type ? { src, type } : src;
+    const consider = () => {
+      const d = vs.duration;
+      if (!d || !isFinite(d)) return;
+      if (prepared?.checkStatus && d < 40) { finish("fail", "status"); return; }
+      stage.querySelector(".err")?.remove();
+      finish("ok");
+    };
+    stallTimer = setTimeout(() => finish("fail", "stall"), prepared?.debrid ? 28000 : 15000);
+    vs.addEventListener("loaded-metadata", consider);
+    vs.addEventListener("duration-change", consider);
+    vs.addEventListener("can-play", consider);
+    vs.addEventListener("error", () => finish("fail", "error"));
+    if (youtube) { finish("ok"); return; }
 
   // resume, speed and progress
   vs.addEventListener("can-play", () => {
@@ -684,22 +880,28 @@ function play(s, info, addonKey, mount) {
   customElements.whenDefined("media-player").then(() => gatherSubs(s, info)).then(addSubs).catch(() => {});
 
   current.keys = e => { if (e.key === "n" && info.next && !e.target.closest("input, select, textarea")) goNext(); };
+  });
 }
 
-// Play the next episode with a source from the same add-on if possible, else the first playable one
+// Play the next episode with a source from the same add-on if possible, else the best playable one
 async function goNext() {
   const c = current; if (!c?.info.next) return;
   const next = c.info.next;
-  if (c.mount && next.watch) { teardown(); current = null; autoStartOnce = true; location.hash = next.watch; return; }
+  if (c.mount && next.watch) { cancelPlayback(); teardown(); current = null; autoStartOnce = true; location.hash = next.watch; return; }
+  const gen = ++playGen;
   teardown();
   openShell(`Loading ${next.short}…`);
   $("#playerStage").innerHTML = `<div class="pv-spin"></div>`;
   try {
     const { results, info } = await next.get();
-    const pick = results.find(r => r.a.key === c.addonKey)?.streams.find(playable)
-      ? results.find(r => r.a.key === c.addonKey) : results.find(r => r.streams?.some(playable));
-    if (pick) return play(pick.streams.find(playable), info, pick.a.key);
+    if (gen !== playGen) return;
+    const rows = [];
+    for (const r of results) for (const st of r.streams || []) rows.push({ a: r.a, s: st, audio: audioOf(st) });
+    const same = rows.filter(r => r.a.key === c.addonKey);
+    const pool = same.some(r => playable(r.s)) ? same : rows;
+    if (pool.some(r => playable(r.s))) return playFromList(pool, null, info);
   } catch {}
+  if (gen !== playGen) return;
   closePlayer();
   location.hash = next.page;
   toast(`Pick a source for ${next.short}`);
@@ -886,6 +1088,7 @@ function route() {
   const [p, ...rest] = h.split("/");
   document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === ({ "": "home", search: "search", list: "list", addons: "addons" }[p] || "") ? "page" : "false"));
   window.scrollTo(0, 0);
+  cancelPlayback();
   if (current?.mount) { teardown(); current = null; }
   if (!p) return viewHome();
   if (p === "watch") return viewWatch(rest[0], rest[1]);
@@ -898,3 +1101,8 @@ function route() {
 }
 window.addEventListener("hashchange", route);
 route();
+// A home-screen launch on iOS can keep the previous HTML until it is fetched
+// again. Once this version is running, a network-first worker updates later
+// deploys. It only covers the app shell: video, Range, and cross-origin
+// requests are not intercepted.
+if ("serviceWorker" in navigator && /(^|\.)github\.io$/.test(location.hostname)) navigator.serviceWorker.register("./sw.js").catch(() => {});
