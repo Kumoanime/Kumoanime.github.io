@@ -149,7 +149,8 @@ enum StreamLogic {
     // MARK: hashes
 
     static func hash(of stream: Stream) -> String {
-        if let direct = normalizeInfoHash(stream.infoHash ?? ""), !direct.isEmpty { return direct }
+        let direct = normalizeInfoHash(stream.infoHash ?? "")
+        if !direct.isEmpty { return direct }
         let pieces = (stream.bingeGroup ?? "").split(separator: "|").map(String.init)
         for piece in pieces.reversed() {
             let fromGroup = normalizeInfoHash(piece)
