@@ -433,7 +433,7 @@ function renderStreams(box, results, info) {
     ${rows.length ? rows.map((x, i) => `<button class="stream" data-i="${i}"><div><b>${esc(x.s.name || x.a.manifest.name)}</b><span>${esc(x.s.title || x.s.description || "")}</span></div><span class="kind">${kind(x.s)}</span></button>`).join("")
       : `<p class="note">None of your add-ons have a source for this yet. ${addons.length ? "" : "Install an add-on under Add-ons to get episode sources."}</p>`}
     ${failed.length ? `<p class="note">No answer from: ${failed.map(esc).join(", ")}.</p>` : ""}</div>`;
-  box.querySelectorAll("[data-i]").forEach(b => b.onclick = () => playFromList(rows, +b.dataset.i, info));
+  box.querySelectorAll("[data-i]").forEach(b => b.onclick = () => playFromList(rows, +b.dataset.i, info, null, { explicit: true }));
 }
 
 function toggleWatch(route, title, poster) {
@@ -555,14 +555,16 @@ async function viewWatch(id, ep) {
   }).join("") : `<div class="empty"><h3>No sources for this episode</h3>${addons.filter(a => a.enabled).length ? "None of your add-ons have it yet. Try again later or add another add-on." : `You haven't installed any add-ons. <a href="#/addons">Open Add-ons</a> to add one.`}</div>`;
   if (report.length) $("#wtSources").insertAdjacentHTML("beforeend", `<details class="wt-report"${rows.some(r => playable(r.s)) ? "" : " open"}><summary>Add-on status (${report.length})</summary><ul>${report.map(r => `<li><b>${esc(r.a.manifest.name)}</b> ${esc(r.why)}.</li>`).join("")}</ul></details>`);
 
-  const start = i => playFromList(rows, i, info, $("#watchStage"));
-  app.querySelectorAll(".wt-src").forEach(b => b.onclick = () => start(+b.dataset.i));
+  const playPicked = i => playFromList(rows, i, info, $("#watchStage"), { explicit: true });
+  const playAuto = () => playFromList(rows, null, info, $("#watchStage"));
+  app.querySelectorAll(".wt-src").forEach(b => b.onclick = () => playPicked(+b.dataset.i));
   // Subbed before dubbed, and a cached Real-Debrid source before an uncached one.
-  const first = KumoPlayback.playbackOrder(rows, null, { safari: isSafariPlayer() }).find(r => playable(r.s));
+  const first = KumoPlayback.playbackOrder(rows, null, { safari: isSafariPlayer(), skipUncached: true }).find(r => playable(r.s))
+    || KumoPlayback.playbackOrder(rows, null, { safari: isSafariPlayer() }).find(r => playable(r.s));
   if (!first) { $("#wtStatus").textContent = rows.length ? "Pick a source below." : "No sources found."; $("#wtStart").hidden = true; return; }
   $("#wtStatus").textContent = "";
-  $("#wtStart").onclick = () => start(first.i);
-  if (autostart) start(first.i);
+  $("#wtStart").onclick = () => playAuto();
+  if (autostart) playAuto();
 }
 
 // ---------- player ----------
@@ -636,25 +638,33 @@ function rdSection() {
     <p class="note">Deploy <code>rd-proxy/worker.js</code> (it only forwards calls to api.real-debrid.com) and paste the address above. The token stays in this browser.</p>
   </section>`;
 }
+function rdEndpoint(target) {
+  let proxy = rdProxy();
+  if (!proxy) return target;
+  if (!/^https?:\/\//i.test(proxy)) proxy = "https://" + proxy;
+  return proxy.replace(/\/+$/, "").replace(/[?#].*$/, "") + "?url=" + encodeURIComponent(target);
+}
 async function rdRequest(token, method, path, params) {
   const target = "https://api.real-debrid.com/rest/1.0" + path;
   const proxy = rdProxy();
   const headers = { Authorization: "Bearer " + token, Accept: "application/json" };
   let body;
   if (params && method !== "GET") { headers["Content-Type"] = "application/x-www-form-urlencoded"; body = new URLSearchParams(params).toString(); }
-  const urls = proxy ? [proxy.replace(/\/+$/, "") + "?url=" + encodeURIComponent(target)] : [target];
-  let last;
-  for (const url of urls) {
-    try {
-      const r = await fetch(url, { method, headers, body, credentials: "omit" });
-      const text = await r.text();
-      let json = null;
-      try { json = text ? JSON.parse(text) : null; } catch {}
-      if (!r.ok) { const e = new Error(json?.error || "Real-Debrid HTTP " + r.status); e.status = r.status; e.code = json?.error_code; throw e; }
-      return json;
-    } catch (e) { if (e.status) throw e; last = e; }
+  const url = rdEndpoint(target);
+  try {
+    const r = await fetch(url, { method, headers, body, credentials: "omit" });
+    const text = await r.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch {}
+    if (!r.ok) { const e = new Error(json?.error || "Real-Debrid HTTP " + r.status); e.status = r.status; e.code = json?.error_code; throw e; }
+    return json;
+  } catch (e) {
+    if (e.status) throw e;
+    const err = new Error(e?.message || "fetch failed");
+    if (proxy) err.proxy = true; else err.cors = true;
+    err.cause = e;
+    throw err;
   }
-  const e = new Error("cors"); e.cors = true; e.cause = last; throw e;
 }
 async function clientIp() {
   if (clientIpCache) return clientIpCache;
@@ -701,22 +711,25 @@ async function prepareStream(s, info) {
   }
   const ctx = streamContext(s, info);
   const auth = rdToken();
-  const needsWeb = P.isDebridResolver(s.url) || (container && !P.browserCanPlay(container, safari));
+  const proxy = rdProxy();
+  const directOk = container ? P.browserCanPlay(container, safari) : !safari;
+  const giveUp = (block) => {
+    const explained = P.explainFailure({ hash: ctx.hash, token: !!auth, proxy: !!proxy, block });
+    return { skip: true, kind: explained.kind, message: explained.message, detail: explained.detail, externalUrl: s.url };
+  };
   let block = null;
-  if (needsWeb && ctx.hash && auth && !(rdCorsBlocked && !rdProxy())) {
+  // A saved proxy is the only way the page can call Real-Debrid. Always try it
+  // when the browser can't play the file, even if an earlier call was blocked.
+  if ((P.isDebridResolver(s.url) || !directOk) && ctx.hash && auth && (proxy || !rdCorsBlocked)) {
     const key = [ctx.hash, ctx.fileIndex, ctx.season, ctx.episode, safari ? 1 : 0].join(":");
     if (rdPlayCache.has(key)) return { ...rdPlayCache.get(key), debrid: true };
     const resolved = await P.resolveRealDebrid({ ...ctx, safari, clientIp: await clientIp(), request: (method, path, params) => rdRequest(auth.token, method, path, params) });
     if (resolved.ok) { const prepared = { url: resolved.url, type: resolved.type, debrid: true }; rdPlayCache.set(key, prepared); return prepared; }
-    if (resolved.kind === "cors") rdCorsBlocked = true;
-    if (["infringing", "uncached", "rate", "auth", "ip"].includes(resolved.kind)) return { skip: true, kind: resolved.kind, message: resolved.message, externalUrl: s.url };
+    if (resolved.kind === "cors" && !proxy) rdCorsBlocked = true;
     block = resolved;
   }
-  const directOk = container ? P.browserCanPlay(container, safari) : !safari;
-  if (!directOk) {
-    const message = block?.kind === "unavailable" && block.message ? block.message : mkvHelp(!!auth);
-    return { skip: true, kind: block?.kind || "unsupported", message, externalUrl: s.url };
-  }
+  const hard = block && ["infringing", "status", "uncached", "rate", "auth", "ip", "proxy", "cors", "hash", "token"].includes(block.kind);
+  if (hard || !directOk) return giveUp(block);
   const type = P.sourceType(s.url) || (container === "mp4" || container === "m4v" ? "video/mp4" : container === "webm" ? "video/webm" : container === "m3u8" ? "application/vnd.apple.mpegurl" : undefined);
   return { url: s.url, type, debrid: true, checkStatus: P.isDebridResolver(s.url) };
 }
@@ -727,11 +740,15 @@ function failureHtml(attempts, lastExternal) {
   if (kinds.length && kinds.every(k => k === "status" || k === "infringing")) {
     title = "Real-Debrid blocked these files";
     body = "The add-on sent its own error clip instead of the episode, usually because Real-Debrid's copyright filter refused the file. Try another add-on.";
-  } else if (kinds.includes("auth")) title = "Real-Debrid token was refused";
+  } else if (kinds.includes("proxy")) title = "Real-Debrid proxy failed";
+  else if (kinds.includes("hash")) title = "Couldn't read this source";
+  else if (kinds.includes("auth") || kinds.includes("token")) title = "Real-Debrid token was refused";
   else if (kinds.includes("uncached") && !kinds.some(k => k === "cors" || k === "unsupported")) title = "Not cached on Real-Debrid";
   else if (kinds.some(k => k === "cors" || k === "unsupported")) title = "Safari can't play this file";
+  const detail = [...attempts].reverse().map(a => a.detail).find(Boolean);
+  const diag = detail ? `<p class="diag">${esc(detail)}</p>` : "";
   const ext = lastExternal ? `<div class="ext">${KumoPlayback.externalPlayers(lastExternal).map(p => `<button class="btn ghost" type="button" data-ext="${esc(p.href)}">${esc(p.name)}</button>`).join("")}<button class="btn ghost" type="button" id="copyStream" data-url="${esc(lastExternal)}">Copy link</button></div>` : "";
-  return `<div class="err"><b>${esc(title)}</b><p>${esc(body)}</p>${ext}</div>`;
+  return `<div class="err"><b>${esc(title)}</b><p>${esc(body)}</p>${diag}${ext}</div>`;
 }
 function showStageMessage(mount, info, html) {
   teardown();
@@ -753,27 +770,42 @@ function showStageMessage(mount, info, html) {
     catch { toast("Couldn't copy the link."); }
   };
 }
-async function playFromList(rows, startIndex, info, mount) {
+function highlightSource(index) {
+  app.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", +b.dataset.i === index));
+}
+// explicit: play that row only and leave it highlighted.
+// otherwise: one forward pass, each source at most once, and a later tap cancels it.
+async function playFromList(rows, startIndex, info, mount, opts) {
   const gen = ++playGen;
-  const order = KumoPlayback.playbackOrder(rows, startIndex, { safari: isSafariPlayer() });
+  const explicit = !!opts?.explicit;
+  const order = KumoPlayback.playbackOrder(rows, explicit ? startIndex : null, { safari: isSafariPlayer(), explicit, skipUncached: !explicit });
   const attempts = [];
+  const seen = new Set();
   let lastExternal = "";
-  for (let n = 0; n < order.length && attempts.length < 4; n++) {
+  if (explicit && mount) highlightSource(startIndex);
+  for (let n = 0; n < order.length; n++) {
     if (gen !== playGen) return;
     const row = order[n];
-    if (mount) app.querySelectorAll(".wt-src").forEach(b => b.classList.toggle("on", +b.dataset.i === row.i));
+    if (seen.has(row.i)) continue;
+    seen.add(row.i);
+    if (!explicit && mount) highlightSource(row.i);
     if ($("#wtStatus")) $("#wtStatus").textContent = attempts.length ? "That source didn't play. Trying another…" : (KumoPlayback.isDebridStream(row.s) ? "Opening a browser-friendly stream…" : "");
     const prepared = await prepareStream(row.s, info);
     if (gen !== playGen) return;
     if (prepared.external) { window.open(prepared.external, "_blank", "noopener"); return; }
     if (prepared.externalUrl) lastExternal = prepared.externalUrl;
-    if (prepared.skip) { attempts.push(prepared); continue; }
+    if (prepared.skip) { attempts.push(prepared); if (explicit) break; continue; }
     const result = await play(row.s, info, row.a?.key, mount, prepared);
     if (gen !== playGen) return;
-    if (result.status === "ok") { if ($("#wtStatus")) $("#wtStatus").textContent = ""; return; }
+    if (result.status === "ok") {
+      if (mount) highlightSource(row.i);
+      if ($("#wtStatus")) $("#wtStatus").textContent = "";
+      return;
+    }
     teardown();
-    attempts.push({ kind: result.reason, message: result.reason === "status" ? "Real-Debrid blocked that file, so the add-on sent an error clip instead of the episode." : "That source didn't start.", externalUrl: row.s.url });
+    attempts.push({ kind: result.reason, message: result.reason === "status" ? "Real-Debrid blocked that file, so the add-on sent an error clip instead of the episode." : "That source didn't start.", detail: result.detail, externalUrl: row.s.url });
     if (row.s.url) lastExternal = row.s.url;
+    if (explicit) break;
     if ($("#wtStatus")) $("#wtStatus").textContent = "That source didn't play. Trying another…";
   }
   if (gen !== playGen) return;
@@ -787,8 +819,8 @@ async function playFromList(rows, startIndex, info, mount) {
 function play(s, info, addonKey, mount, prepared) {
   if (s.externalUrl && !s.url && !s.ytId && !prepared?.url) { window.open(s.externalUrl, "_blank", "noopener"); return Promise.resolve({ status: "ok" }); }
   return new Promise(resolve => {
-    let settled = false, stallTimer = null;
-    const finish = (status, reason) => { if (settled) return; settled = true; clearTimeout(stallTimer); resolve({ status, reason }); };
+    let settled = false, stallTimer = null, outcome = "";
+    const finish = (status, reason) => { if (settled) return; settled = true; outcome = status; clearTimeout(stallTimer); resolve({ status, reason }); };
     teardown();
     if (!mount) openShell(info.label);
     current = { info, addonKey, mount };
@@ -855,6 +887,8 @@ function play(s, info, addonKey, mount, prepared) {
   $("#pvNext").onclick = () => goNext();
   vs.addEventListener("ended", () => {
     record();
+    if (outcome === "fail") return;
+    if (prepared?.checkStatus && vs.duration && vs.duration < 40) return;
     if (!info.next || !prefs.autoNext) return;
     let n = 5;
     const box = $("#pvCount");

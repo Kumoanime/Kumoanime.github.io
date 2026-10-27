@@ -47,7 +47,7 @@ const server = http.createServer((req, res) => {
           behaviorHints: { filename: "Show.S01E01.1080p.mkv" },
         },
         {
-          name: "[RD⬇️] Comet 720p",
+          name: "[RD⚡] Comet 720p",
           description: "playable",
           url: `http://127.0.0.1:${port}/media/episode.mp4`,
           behaviorHints: { filename: "Show.S01E01.mp4" },

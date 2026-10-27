@@ -52,7 +52,36 @@ const rows = [
 ];
 const order = P.playbackOrder(rows, null, { safari: true });
 assert.equal(order[0].i, 1, "cached sub is tried before an uncached sub");
-assert.equal(P.playbackOrder(rows, 0, { safari: true })[0].i, 0, "an explicit tap stays first");
+assert.equal(P.playbackOrder(rows, 0, { safari: true })[0].i, 0, "an explicit index stays first");
+assert.deepEqual(P.playbackOrder(rows, 0, { safari: true, explicit: true }).map(r => r.i), [0], "a tap plays only that source");
+const auto = P.playbackOrder(rows, null, { safari: true, skipUncached: true });
+assert.ok(auto.every(r => !P.isUncachedStream(r.s)), "auto fallback skips uncached");
+assert.equal(new Set(auto.map(r => r.i)).size, auto.length, "auto fallback lists each source once");
+assert.ok(!auto.some(r => r.i === 0));
+
+const HASH = "0123456789abcdef0123456789abcdef01234567";
+const binge = { name: "[RD⚡] Comet 1080p", behaviorHints: { bingeGroup: "comet|realdebrid|" + HASH, filename: "Show.mkv" } };
+assert.equal(P.hashOf(binge), HASH);
+assert.equal(P.hashOf({ url: "https://comet.elfhosted.com/cfg/playback/AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH/0/n/3/1?name=Ep" }), HASH);
+assert.equal(P.hashOf({ url: "https://comet.elfhosted.com/cfg/playback/30313233343536373839616263646566303132333435363738396162636465663031323334353637/0/2/3/1" }), HASH);
+assert.equal(P.isDebridResolver("https://comet.elfhosted.com/cfg/playback/AERUKZ4JVPG66AJDIVTYTK6N54ASGRLH/0/n/3/1"), true);
+assert.equal(P.playbackParts("https://comet.elfhosted.com/eyJ/playback/" + HASH + "/0/n/3/1?media_type=series").fileIndex, null);
+assert.equal(P.playbackParts("https://comet.elfhosted.com/eyJ/playback/" + HASH + "/0/n/3/1?media_type=series").episode, 1);
+
+const proxyOn = P.explainFailure({ hash: HASH, token: true, proxy: true, block: { kind: "cors", message: "Real-Debrid's API blocks browsers. Add the proxy URL on the Add-ons page.", error: "Load failed" } });
+assert.equal(proxyOn.kind, "proxy");
+assert.ok(!/add a proxy/i.test(proxyOn.message), proxyOn.message);
+assert.ok(/hash yes/.test(proxyOn.detail) && /token yes/.test(proxyOn.detail) && /proxy yes/.test(proxyOn.detail));
+assert.ok(/Load failed/.test(proxyOn.detail));
+const noHash = P.explainFailure({ hash: "", token: true, proxy: true });
+assert.equal(noHash.kind, "hash");
+assert.ok(/torrent hash/.test(noHash.message));
+assert.ok(!/add a proxy/i.test(noHash.message));
+const noToken = P.explainFailure({ hash: HASH, token: false, proxy: true });
+assert.equal(noToken.kind, "token");
+assert.ok(/no real-debrid token/i.test(noToken.message));
+const noProxy = P.explainFailure({ hash: HASH, token: true, proxy: false });
+assert.ok(/add a proxy/i.test(noProxy.message));
 
 assert.equal(P.classifyProbe({ kind: "redirect" }, mkv), "redirect");
 assert.equal(P.classifyProbe({ type: "opaqueredirect" }, mkv), "redirect");

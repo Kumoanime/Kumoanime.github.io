@@ -46,7 +46,9 @@ export default {
     const init = { method: request.method, headers };
     if (request.method !== "GET") init.body = await request.arrayBuffer();
 
-    const upstream = await fetch(target, init);
+    let upstream;
+    try { upstream = await fetch(target, init); }
+    catch { return deny(request, 502, "Upstream fetch failed"); }
     const out = new Headers(cors(request));
     const contentType = upstream.headers.get("Content-Type");
     if (contentType) out.set("Content-Type", contentType);
