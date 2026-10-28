@@ -24,23 +24,25 @@ struct RootView: View {
                     NavigationStack { AddonsView() }
                 }
             }
+            if let toast = model.toast {
+                VStack {
+                    Spacer()
+                    Text(toast)
+                        .font(Theme.body(14, weight: .medium))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .background(Theme.ink, in: Capsule())
+                        .padding(.bottom, 12)
+                }
+                .transition(.opacity)
+                .allowsHitTesting(false)
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Dock(tab: $tab)
         }
         .overlay { if splash { splashView } }
-        .overlay(alignment: .bottom) {
-            if let toast = model.toast {
-                Text(toast)
-                    .font(Theme.body(14, weight: .medium))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 9)
-                    .background(Theme.ink, in: Capsule())
-                    .padding(.bottom, 96)
-                    .transition(.opacity)
-            }
-        }
         .onChange(of: model.requestedTab, perform: { tab in
             if let tab { self.tab = tab; model.requestedTab = nil }
         })

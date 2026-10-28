@@ -128,32 +128,40 @@ struct Dock: View {
     @Binding var tab: Tab
 
     var body: some View {
-        HStack(spacing: 6) {
-            item(.search, "magnifyingglass")
-            item(.home, "house.fill")
-            item(.watching, "tv.fill")
-            item(.addons, "puzzlepiece.extension.fill")
+        VStack(spacing: 0) {
+            Rectangle().fill(Theme.line).frame(height: 1)
+            HStack(spacing: 0) {
+                item(.search, "magnifyingglass")
+                item(.home, "house.fill")
+                item(.watching, "tv.fill")
+                item(.addons, "puzzlepiece.extension.fill")
+            }
+            .padding(.top, 6)
+            .padding(.bottom, 4)
         }
-        .padding(.horizontal, 8)
-        .frame(height: 64)
-        .background(Theme.surface.opacity(0.94), in: Capsule())
-        .overlay(Capsule().stroke(Theme.line, lineWidth: 1))
-        .shadow(color: .black.opacity(0.6), radius: 16, y: 8)
-        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity)
+        .background(Theme.surface.ignoresSafeArea(edges: .bottom))
     }
 
     private func item(_ value: Tab, _ symbol: String) -> some View {
-        Button {
+        let on = tab == value
+        return Button {
             tab = value
         } label: {
-            Image(systemName: symbol)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(tab == value ? Color.black : Theme.muted)
-                .frame(width: 48, height: 48)
-                .background(tab == value ? Theme.logo : Color.clear, in: Circle())
+            VStack(spacing: 3) {
+                Image(systemName: symbol)
+                    .font(.system(size: 20, weight: .semibold))
+                Text(value.title)
+                    .font(Theme.body(10, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(on ? Theme.logo : Theme.muted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 2)
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(value.title)
-        .accessibilityAddTraits(tab == value ? .isSelected : [])
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 
