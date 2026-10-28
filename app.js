@@ -394,21 +394,12 @@ function continueHtml() {
     return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId, eager: i === 0, defer: i >= 4 });
   }).join("")}</div>`)}</div>`;
 }
-function currentlyHtml() {
-  const items = watchingItems();
-  if (!items.length) return "";
-  const lead = !continueItems().length;
-  return `<div id="sec-watching">${section("Currently Watching", `<div class="rail">${items.map((w, i) => {
-    const airId = (/^#\/a\/(\d+)$/.exec(w.route || "") || [])[1] || "";
-    return card(w.route, w.title, w.poster, "", "", { watchRoute: w.route, airId, eager: lead && i === 0, defer: i >= 4 });
-  }).join("")}</div>`)}</div>`;
-}
-function homeRoot() {
-  if (activeKey === "#/" && app.firstElementChild) return app.firstElementChild;
-  return viewNodes.get("#/")?.el || null;
+function viewRoot(key) {
+  if (activeKey === key && app.firstElementChild) return app.firstElementChild;
+  return viewNodes.get(key)?.el || null;
 }
 function refreshContinue() {
-  const root = homeRoot();
+  const root = viewRoot("#/");
   if (!root) return;
   const html = continueHtml();
   const sec = root.querySelector("#sec-continue");
@@ -417,28 +408,15 @@ function refreshContinue() {
   else sec.outerHTML = html;
   observeLazy(root);
 }
-function refreshCurrently() {
-  const root = homeRoot();
-  if (!root) return;
-  const html = currentlyHtml();
-  const sec = root.querySelector("#sec-watching");
-  if (!html) { sec?.remove(); return; }
-  if (!sec) {
-    const cont = root.querySelector("#sec-continue");
-    if (cont) cont.insertAdjacentHTML("afterend", html);
-    else root.insertAdjacentHTML("afterbegin", html);
-  } else sec.outerHTML = html;
-  observeLazy(root);
-}
-function refreshHomeRows() {
-  refreshContinue();
-  refreshCurrently();
+function refreshList() {
+  const root = viewRoot("#/list");
+  if (root) viewList(root);
 }
 function saveHomeSnap(patch) {
   const prev = store.get("homeSnap", {}) || {};
   const rails = { ...(prev.rails || {}), ...(patch.rails || {}) };
   const cats = patch.cats || prev.cats || [];
-  const lcp = continueItems()[0]?.poster || watchingItems()[0]?.poster || rails.trending?.[0]?.poster || prev.lcp || "";
+  const lcp = continueItems()[0]?.poster || rails.trending?.[0]?.poster || prev.lcp || "";
   store.set("homeSnap", { at: Date.now(), lcp, rails, cats });
 }
 function enabledCatalogs() {
@@ -455,7 +433,7 @@ function fillRail(root, k, title, note, list) {
   el.dataset.sig = sig;
   el.innerHTML = section(title, `<div class="rail">${list.map((m, i) => aniCard(m, i)).join("")}</div>`, note);
   observeLazy(el);
-  if (k === "trending" && list[0]?.coverImage?.large && !continueItems().length && !watchingItems().length) preloadHero(list[0].coverImage.large);
+  if (k === "trending" && list[0]?.coverImage?.large && !continueItems().length) preloadHero(list[0].coverImage.large);
 }
 function homeShell(root, snap) {
   const s = currentSeason();
@@ -474,11 +452,9 @@ function homeShell(root, snap) {
     return `<div id="cat-${i}" data-key="${esc(x.key)}" data-sig="${snapCat?.items?.map(it => it.href).join(",") || ""}">${section(x.c.name || x.c.id, body, x.a.manifest.name)}</div>`;
   }).join("");
   const empty = addons.length ? "" : `<div id="home-empty">${section("Get more from Kumo", `<div class="empty"><h3>Add your first add-on</h3>Add-ons supply the episodes Kumo can play. <a href="#/addons">Open Add-ons</a> to install one by link or browse a repository.</div>`)}</div>`;
-  root.innerHTML = continueHtml() + currentlyHtml() + rails + cats + empty;
+  root.innerHTML = continueHtml() + rails + cats + empty;
   observeLazy(root);
-  const lead = continueItems()[0]?.poster || watchingItems()[0]?.poster || snap?.lcp;
-  if (lead) preloadHero(lead);
-  saveHomeSnap({});
+  if (snap?.lcp) preloadHero(snap.lcp);
 }
 async function viewHome(root, gen) {
   const snap = store.get("homeSnap", null);
@@ -670,7 +646,6 @@ function paintAnime(root, m) {
     toggleWatch(route, title, m.coverImage?.large);
     const b = root.querySelector("#toggleList");
     if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching";
-    refreshHomeRows();
   };
   page.playNext = () => { autoStartOnce = true; goHash(`#/watch/${id}/${isMovie ? 1 : nextEpisode(route, count)}`); };
   page.playTrailer = m.trailer?.site === "youtube" ? () => play({ ytId: m.trailer.id }, { label: `${title} · Trailer`, key: `${route}:trailer` }) : null;
@@ -773,7 +748,7 @@ async function viewMeta(key, type, id, root) {
     ${videos.length ? section("Episodes", `<div class="vlist">${videos.map(v => `<button class="vrow" type="button" data-vid="${esc(v.id)}">${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" width="120" height="68" loading="lazy" decoding="async">` : ""}<div><b>${esc(v.title || v.name || "Episode " + v.episode)}</b><span>${[v.season != null ? "S" + v.season : "", v.episode != null ? "E" + v.episode : ""].join(" ")}</span></div></button>`).join("")}</div>`) : ""}
     <div id="streams"></div>`;
   const ctx = { route, title: m.name, poster: m.poster };
-  page.toggleList = () => { toggleWatch(route, m.name, m.poster); const b = root.querySelector("#toggleList"); if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching"; refreshHomeRows(); };
+  page.toggleList = () => { toggleWatch(route, m.name, m.poster); const b = root.querySelector("#toggleList"); if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching"; };
   const vLabel = v => v.title || v.name || `Episode ${v.episode}`;
   const fetchStreams = async i => {
     const vid = i < 0 ? id : videos[i].id, label = i < 0 ? m.name : vLabel(videos[i]);
@@ -808,16 +783,16 @@ function toggleWatch(route, title, poster) {
   else { watchlist[route] = { route, title, poster, added: Date.now() }; toast("Added to Watching"); }
   store.set("watchlist", watchlist);
   paintQuick(route);
-  refreshHomeRows();
+  refreshContinue();
+  refreshList();
   loadNotes();
   scheduleSync();
 }
 function viewList(root) {
-  const cont = continueItems();
-  const saved = watchingItems().length > 0;
-  const recent = cont.length ? section("Recently watched", `<div class="grid">${cont.map(p => card(continueHref(p), p.title, p.poster, p.label, "", { watchRoute: p.route, airId: (/^#\/a\/(\d+)$/.exec(p.route || "") || [])[1] || "" })).join("")}</div>`) : "";
-  const empty = cont.length ? "" : section("Watching", `<div class="empty"><h3>${saved ? "Nothing in progress" : "You're not watching anything yet"}</h3>${saved ? "Your shows are on Home. Start an episode and it will show up here." : "Tap <b>+ Watching</b> on any show to keep it on Home and get told when new episodes come out."}</div>`);
-  root.innerHTML = empty + recent + `<p class="note">Your shows are on Home. Progress is saved on this device.</p>`;
+  const items = watchingItems();
+  root.innerHTML =
+    section("Watching", items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "", "", { defer: false })).join("")}</div>` : `<div class="empty"><h3>You're not watching anything yet</h3>Tap <b>+ Watching</b> on any show to keep it here and get told when new episodes come out.</div>`) +
+    `<p class="note">Your shows are saved on this device.</p>`;
   observeLazy(root);
 }
 function viewAddons(root) {
@@ -1145,7 +1120,8 @@ function route() {
   if (key === activeKey && app.firstElementChild?.classList?.contains("view")) {
     cancelPlayback();
     refreshProgressMarks(app.firstElementChild);
-    if (key === "#/") refreshHomeRows();
+    if (key === "#/") refreshContinue();
+    if (key === "#/list") refreshList();
     return;
   }
   cancelPlayback();
@@ -1173,7 +1149,8 @@ function route() {
       snap();
       requestAnimationFrame(() => requestAnimationFrame(snap));
       refreshProgressMarks(root);
-      if (key === "#/") refreshHomeRows();
+      if (key === "#/") refreshContinue();
+      if (key === "#/list") refreshList();
       return;
     }
     window.scrollTo(0, 0);
