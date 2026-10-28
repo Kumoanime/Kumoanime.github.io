@@ -6,6 +6,8 @@ struct AnimeDetailView: View {
     @State private var media: Media?
     @State private var failed = false
     @State private var trailer: String?
+    @State private var recs: [Media] = []
+    @State private var filler: Set<Int> = []
 
     var body: some View {
         ScrollView {
@@ -99,7 +101,23 @@ struct AnimeDetailView: View {
                 Button {
                     model.toggleWatch(key: route, title: media.title, poster: media.cover)
                 } label: {
-                    Text(model.watchlist[route] == nil ? "+ Watching" : "✓ Watching")
+                    Text(model.isWatching(route) ? "✓ Watching" : "+ Watching")
+                        .font(Theme.body(15, weight: .bold))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Theme.raise, in: RoundedRectangle(cornerRadius: 12))
+                }
+                Menu {
+                    Button("Not in a list") {
+                        model.setListStatus(key: route, title: media.title, poster: media.cover, status: nil)
+                    }
+                    ForEach(ListStatus.allCases) { status in
+                        Button(status.label) {
+                            model.setListStatus(key: route, title: media.title, poster: media.cover, status: status.rawValue)
+                        }
+                    }
+                } label: {
+                    Text(model.listLabel(route))
                         .font(Theme.body(15, weight: .bold))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
@@ -110,8 +128,40 @@ struct AnimeDetailView: View {
             if !media.isMovie {
                 VStack(alignment: .leading, spacing: 10) {
                     SectionHead(title: "Episodes", note: airing(media))
-                    EpisodeGrid(count: media.episodeCount, current: 0, seen: { model.fraction(route: route, episode: $0) > 0.92 }, fraction: { model.fraction(route: route, episode: $0) }) { number in
+                    Button("Mark season watched") {
+                        model.markSeasonWatched(route: route, count: media.episodeCount, title: media.title, poster: media.cover)
+                    }
+                    .font(Theme.body(14, weight: .bold))
+                    .foregroundStyle(Theme.logo)
+                    EpisodeGrid(
+                        count: media.episodeCount,
+                        current: 0,
+                        seen: { model.fraction(route: route, episode: $0) > 0.92 },
+                        fraction: { model.fraction(route: route, episode: $0) },
+                        marked: { model.fraction(route: route, episode: $0) > 0.92 },
+                        toggleMark: { number in
+                            let on = model.fraction(route: route, episode: number) > 0.92
+                            model.setEpisodeWatched(route: route, episode: number, watched: !on, title: media.title, poster: media.cover)
+                        },
+                        filler: filler
+                    ) { number in
                         model.pendingRoute = .watch(id: media.id, episode: number, auto: false)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            if !recs.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    SectionHead(title: model.recHeading(title: media.title, key: route))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(recs) { item in
+                                NavigationLink(value: AppRoute.anime(item.id)) {
+                                    PosterCard(title: item.title, poster: item.cover, subtitle: item.seasonYear.map(String.init), rating: item.ratingText)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -133,7 +183,14 @@ struct AnimeDetailView: View {
     }
 
     private func load() async {
-        do { media = try await model.media(id: id) } catch { failed = true }
+        do {
+            let item = try await model.media(id: id)
+            media = item
+            async let loadedRecs = model.recommendations(id: id)
+            async let loadedFiller = model.fillerEpisodes(malID: item.idMal)
+            recs = (try? await loadedRecs) ?? []
+            filler = await loadedFiller
+        } catch { failed = true }
     }
 }
 

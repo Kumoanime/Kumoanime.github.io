@@ -15,6 +15,8 @@ struct WatchView: View {
     @State private var loading = true
     @State private var failed = false
     @State private var loadToken = 0
+    @State private var filler: Set<Int> = []
+    @State private var fillerLoaded = false
 
     var body: some View {
         ScrollView {
@@ -90,7 +92,16 @@ struct WatchView: View {
                     if !media.isMovie {
                         PrefToggle(title: "Auto Next", on: model.prefs.autoNext) { model.setPref { $0.autoNext.toggle() } }
                     }
-                    PrefToggle(title: "Auto Skip intro", on: model.prefs.autoSkip) { model.setPref { $0.autoSkip.toggle() } }
+                    PrefToggle(title: "Auto Skip", on: model.prefs.autoSkip) { model.setPref { $0.autoSkip.toggle() } }
+                    Menu {
+                        Button("Sub") { model.setPref { $0.audio = "sub" } }
+                        Button("Dub") { model.setPref { $0.audio = "dub" } }
+                    } label: {
+                        Text(model.prefs.audio == "dub" ? "Dub" : "Sub")
+                            .font(Theme.body(14, weight: .bold))
+                            .foregroundStyle(Theme.logo)
+                    }
+                    .accessibilityLabel("Prefer \(model.prefs.audio == "dub" ? "dub" : "sub")")
                 }
                 Spacer()
                 if !media.isMovie {
@@ -159,11 +170,22 @@ struct WatchView: View {
             if !media.isMovie {
                 VStack(alignment: .leading, spacing: 10) {
                     SectionHead(title: "Episodes")
+                    Button("Mark season watched") {
+                        model.markSeasonWatched(route: route, count: media.episodeCount, title: media.title, poster: media.cover)
+                    }
+                    .font(Theme.body(14, weight: .bold))
+                    .foregroundStyle(Theme.logo)
                     EpisodeGrid(
                         count: media.episodeCount,
                         current: episode,
                         seen: { model.fraction(route: route, episode: $0) > 0.92 },
-                        fraction: { model.fraction(route: route, episode: $0) }
+                        fraction: { model.fraction(route: route, episode: $0) },
+                        marked: { model.fraction(route: route, episode: $0) > 0.92 },
+                        toggleMark: { number in
+                            let on = model.fraction(route: route, episode: number) > 0.92
+                            model.setEpisodeWatched(route: route, episode: number, watched: !on, title: media.title, poster: media.cover)
+                        },
+                        filler: filler
                     ) { number in
                         Task { await reload(number: number, forceAuto: false, keepPlayer: false) }
                     }
@@ -216,6 +238,11 @@ struct WatchView: View {
             let loaded = try await model.media(id: anilistID)
             guard token == loadToken else { return }
             media = loaded
+            if !fillerLoaded {
+                fillerLoaded = true
+                let mal = loaded.idMal
+                Task { filler = await model.fillerEpisodes(malID: mal) }
+            }
             let result = await model.fetchStreams(media: loaded, episode: number)
             guard token == loadToken else { return }
             rows = result.rows

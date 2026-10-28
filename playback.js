@@ -88,12 +88,28 @@
     return score;
   }
 
-  // Sub before dub, and within that a cached source before an uncached MKV.
+  // Preferred audio first (sub unless the setting says dub), then a cached source before an uncached one.
+  function audioRankFor(prefer) {
+    return prefer === "dub" ? { dub: 0, other: 1, sub: 2 } : { sub: 0, other: 1, dub: 2 };
+  }
   function orderStreams(rows, opts) {
     const safari = !!opts?.safari;
-    const audioRank = { sub: 0, other: 1, dub: 2 };
+    const audioRank = audioRankFor(opts?.audio);
     return rows.map((r, i) => ({ ...r, i: r.i ?? i })).filter(r => r.s && (r.s.url || r.s.ytId || r.s.externalUrl))
       .sort((a, b) => (audioRank[a.audio] ?? 1) - (audioRank[b.audio] ?? 1) || rankStream(b.s, safari) - rankStream(a.s, safari));
+  }
+  function skipWindows(results) {
+    const out = { op: null, ed: null };
+    for (const row of results || []) {
+      const start = Number(row && row.interval && row.interval.startTime);
+      const end = Number(row && row.interval && row.interval.endTime);
+      if (!(end > start)) continue;
+      if (row.skipType === "op" || row.skipType === "ed") out[row.skipType] = { start, end };
+    }
+    return out;
+  }
+  function inSkip(time, window) {
+    return !!(window && time >= window.start && time < window.end - 0.35);
   }
 
   // explicit: the row the user tapped, and nothing else.
@@ -645,7 +661,7 @@
 
   const api = {
     containerOf, browserCanPlay, isDebridResolver, isDirectDebridFile, isDebridStream,
-    isCachedStream, isUncachedStream, rankStream, orderStreams, playbackOrder, hashOf,
+    isCachedStream, isUncachedStream, rankStream, orderStreams, playbackOrder, skipWindows, inSkip, hashOf,
     playbackParts, sourceType, kindLabel, classifyProbe, tokenFromUrl, tokenFromAddons,
     pickTorrentFile, pickTranscode, idFromDownload, rdDownload, rdErrorKind, resolveRealDebrid, externalPlayers,
     normalizeInfoHash, explainFailure, failRd, nextFromCometResolve, slateFromUrl, classifyPhoneFetch,

@@ -306,7 +306,10 @@ function continueItems() {
   return Object.values(byShow).sort((a, b) => b.updated - a.updated).slice(0, 15);
 }
 function watchingItems() {
-  return Object.values(watchlist).sort((a, b) => (b.added || 0) - (a.added || 0));
+  return listItems("watching");
+}
+function listItems(status) {
+  return Object.values(watchlist).filter(item => KumoBrowse.listStatus(item) === status).sort((a, b) => (b.added || 0) - (a.added || 0));
 }
 
 // ---------- artwork ----------
@@ -338,7 +341,7 @@ function card(href, title, poster, sub, extra = "", opt = {}) {
     else img = `<img ${dims} src="${esc(poster)}"${set} ${opt.eager ? `fetchpriority="high"` : `loading="lazy" fetchpriority="low"`}>`;
   }
   const watchRoute = opt.watchRoute || href;
-  const on = !!watchlist[watchRoute];
+  const on = KumoBrowse.isWatching(watchlist[watchRoute]);
   const airId = opt.airId || ((/^#\/a\/(\d+)$/.exec(watchRoute) || [])[1] || "");
   const air = opt.air != null ? opt.air : (airId ? airForId(airId) : "");
   const name = title || "this show";
@@ -449,8 +452,15 @@ function refreshContinue() {
   observeLazy(root);
 }
 function refreshList() {
-  const root = viewRoot("#/list");
-  if (root) viewList(root);
+  const paint = (key, el) => {
+    if (!el) return;
+    const which = key === "#/list" ? "watching" : (key.split("/")[2] || "watching");
+    viewList(el, which);
+  };
+  if (activeKey === "#/list" || activeKey.startsWith("#/list/")) paint(activeKey, app.firstElementChild);
+  for (const [key, entry] of viewNodes) {
+    if (key === "#/list" || key.startsWith("#/list/")) paint(key, entry.el);
+  }
 }
 function saveHomeSnap(patch) {
   const prev = store.get("homeSnap", {}) || {};
@@ -699,7 +709,7 @@ const FILTERS = {
   format: ["Type", [["TV", "TV"], ["MOVIE", "Movie"], ["OVA", "OVA"], ["ONA", "ONA"], ["SPECIAL", "Special"], ["TV_SHORT", "TV short"]]],
   status: ["Status", [["RELEASING", "Airing"], ["FINISHED", "Finished"], ["NOT_YET_RELEASED", "Not yet aired"], ["HIATUS", "On hiatus"]]],
   country: ["Country", [["JP", "Japan"], ["CN", "China"], ["KR", "South Korea"], ["TW", "Taiwan"]]],
-  rating: ["Rating", [["90", "★ 9+"], ["80", "★ 8+"], ["70", "★ 7+"], ["60", "★ 6+"], ["50", "★ 5+"]]],
+  rating: ["Min score", [["90", "9+"], ["80", "8+"], ["70", "7+"], ["60", "6+"], ["50", "5+"]]],
   source: ["Source", [["MANGA", "Manga"], ["LIGHT_NOVEL", "Light novel"], ["WEB_NOVEL", "Web novel"], ["NOVEL", "Novel"], ["ORIGINAL", "Original"], ["VIDEO_GAME", "Video game"], ["VISUAL_NOVEL", "Visual novel"]]],
   episodes: ["Episodes", [["1-12", "1–12"], ["13-26", "13–26"], ["27-60", "27–60"], ["61-", "61+"]]],
   sort: ["Sort: popular", [["TRENDING_DESC", "Sort: trending"], ["SCORE_DESC", "Sort: top rated"], ["START_DATE_DESC", "Sort: newest"], ["TITLE_ROMAJI", "Sort: A–Z"]]],
@@ -721,7 +731,7 @@ function filterVars() {
   if (filters.rating) v.score = +filters.rating - 1;
   if (filters.source) v.source = filters.source;
   if (filters.episodes) { const [a, b] = filters.episodes.split("-"); v.epsMin = +a - 1; if (b) v.epsMax = +b + 1; }
-  if (filters.exclude === "watching") { const ids = Object.keys(watchlist).map(r => +(r.match(/^#\/a\/(\d+)$/) || [])[1]).filter(Boolean); if (ids.length) v.notIn = ids; }
+  if (filters.exclude === "watching") { const ids = watchingItems().map(item => +(String(item.route || "").match(/^#\/a\/(\d+)$/) || [])[1]).filter(Boolean); if (ids.length) v.notIn = ids; }
   v.sort = [filters.sort || (filters.q ? "SEARCH_MATCH" : "POPULARITY_DESC")];
   return v;
 }
@@ -790,6 +800,33 @@ function viewSearch(root, focus) {
 }
 
 function mediaSig(m) { return [m.id, m.episodes || "", m.nextAiringEpisode?.episode || "", m.bannerImage || "", (m.description || "").length, m.averageScore || ""].join(":"); }
+function episodeCells(id, route, count, current) {
+  return Array.from({ length: count }, (_, i) => i + 1).map(n => {
+    const p = progress[`${route}:${n}`];
+    const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
+    const on = pct > 92;
+    return `<div class="ep-wrap"><a class="ep${on ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}" ${current === n ? 'aria-current="true"' : ""}>${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a><button type="button" class="ep-mark" data-mark="${n}" aria-pressed="${on ? "true" : "false"}" aria-label="${on ? `Mark episode ${n} unwatched` : `Mark episode ${n} watched`}">✓</button></div>`;
+  }).join("");
+}
+function episodeWatched(p) { return !!(p && p.d > 0 && p.t / p.d > 0.92); }
+function writeWatched(route, numbers, on, meta) {
+  const id = Number((String(route).match(/(\d+)$/) || [])[1]);
+  for (const n of numbers) {
+    const key = `${route}:${n}`;
+    if (on) {
+      const prev = progress[key];
+      const d = prev?.d > 1 ? prev.d : 1000;
+      saveProgress(key, { t: d, d, route, title: meta.title || "", poster: meta.poster || "", label: `Episode ${n}` });
+    } else if (progress[key]) {
+      progress[key] = { ...progress[key], t: 0, updated: Date.now() };
+      store.set("progress", progress);
+      scheduleSync();
+      if (id) persistNotes(KumoNotify.undismissEpisode(noteState, id, n, Math.floor(Date.now() / 1000)));
+    }
+  }
+  if (!on) loadNotes();
+  eachView(root => refreshProgressMarks(root));
+}
 function episodeCount(m) {
   if (m.format === "MOVIE") return m.status === "NOT_YET_RELEASED" ? 0 : 1;
   // Next episode 1 means nothing has aired. A missing count used to become
@@ -812,7 +849,7 @@ function paintAnime(root, m) {
   if (root.dataset.sig === sig && root.querySelector("#playNext")) { refreshProgressMarks(root); return; }
   root.dataset.sig = sig;
   const id = m.id, route = `#/a/${id}`, title = titleOf(m);
-  const isMovie = m.format === "MOVIE", count = episodeCount(m), inList = !!watchlist[route];
+  const isMovie = m.format === "MOVIE", count = episodeCount(m), status = KumoBrowse.listStatus(watchlist[route]), inList = status === "watching";
   const studio = m.studios?.nodes?.[0]?.name;
   const next = m.nextAiringEpisode ? `Ep ${m.nextAiringEpisode.episode} airs ${new Date(m.nextAiringEpisode.airingAt * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}` : "";
   if (m.bannerImage) preloadHero(m.bannerImage);
@@ -830,16 +867,19 @@ function paintAnime(root, m) {
       ${count > 0 ? `<button class="btn" type="button" id="playNext">▶ ${isMovie ? "Play" : "Play episode " + nextEpisode(route, count)}</button>` : `<button class="btn" type="button" disabled>Not aired yet</button>`}
       ${m.trailer?.site === "youtube" ? `<button class="btn ghost" type="button" id="playTrailer">🎬 Trailer</button>` : ""}
       <button class="btn ghost" type="button" id="toggleList" data-watch="${esc(route)}">${inList ? "✓ Watching" : "+ Watching"}</button>
+      <label class="list-pick">List
+        <select id="listStatus" data-route="${esc(route)}" aria-label="List status">
+          <option value="">Not in a list</option>
+          ${KumoBrowse.STATUSES.map(row => `<option value="${row.id}"${status === row.id ? " selected" : ""}>${esc(row.label)}</option>`).join("")}
+        </select>
+      </label>
     </div>
-    ${isMovie ? "" : section("Episodes", count ? `<div class="eps" data-route="${esc(route)}">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
-      const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
-      return `<a class="ep${pct > 92 ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}">${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
-    }).join("")}</div>` : `<p class="note">No episodes have aired yet.</p>`, next)}`;
-  page.toggleList = () => {
-    toggleWatch(route, title, m.coverImage?.large);
-    const b = root.querySelector("#toggleList");
-    if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching";
-  };
+    ${isMovie ? "" : section("Episodes", count ? `<div class="eps" data-route="${esc(route)}" data-title="${esc(title)}" data-poster="${esc(m.coverImage?.large || "")}">${episodeCells(id, route, count)}</div><button class="btn ghost small" type="button" id="markSeason">Mark season watched</button>` : `<p class="note">No episodes have aired yet.</p>`, next)}
+    <div id="recs"></div>`;
+  const listPick = root.querySelector("#listStatus");
+  if (listPick) listPick.onchange = () => setListStatus(route, title, m.coverImage?.large, listPick.value);
+  page.toggleList = () => toggleWatch(route, title, m.coverImage?.large);
+  scheduleShowExtras(root, m);
   page.playNext = () => { autoStartOnce = true; goHash(`#/watch/${id}/${isMovie ? 1 : nextEpisode(route, count)}`); };
   page.playTrailer = m.trailer?.site === "youtube" ? () => play({ ytId: m.trailer.id }, { label: `${title} · Trailer`, key: `${route}:trailer` }) : null;
 }
@@ -897,7 +937,7 @@ async function fetchAniStreams(ctx, ep, isMovie, onUpdate) {
   }
   const label = isMovie ? "Movie" : `Episode ${ep}`;
   const info = {
-    ...ctx, key: `${ctx.route}:${ep}`, label: `${ctx.title} · ${label}`, short: label, ep, subIds: ids, subType: isMovie ? "movie" : "series",
+    ...ctx, key: `${ctx.route}:${ep}`, label: `${ctx.title} · ${label}`, short: label, ep, mal: ctx.media.idMal || null, subIds: ids, subType: isMovie ? "movie" : "series",
     next: !isMovie && ep < ctx.count ? { short: `Episode ${ep + 1}`, page: `#/watch/${ctx.media.id}/${ep + 1}`, watch: `#/watch/${ctx.media.id}/${ep + 1}`, get: () => fetchAniStreams(ctx, ep + 1, false) } : null,
   };
   const slots = new Array(jobs.length);
@@ -930,7 +970,7 @@ async function viewMeta(key, type, id, root) {
   if (!m) { root.innerHTML = `<div class="empty"><h3>Couldn't load this title</h3>${esc(a.manifest.name)} didn't send its details.</div>`; return; }
   const route = metaRoute(a, type, id);
   const videos = (m.videos || []).slice().sort((x, y) => (x.season || 0) - (y.season || 0) || (x.episode || 0) - (y.episode || 0));
-  const inList = !!watchlist[route];
+  const inList = KumoBrowse.isWatching(watchlist[route]);
   if (m.background) preloadHero(m.background);
   root.innerHTML = `
     <div class="hero">${m.background ? `<div class="banner"><img src="${esc(m.background)}" alt="" fetchpriority="high" decoding="async" width="1900" height="400"></div>` : `<div class="banner"></div>`}
@@ -941,7 +981,7 @@ async function viewMeta(key, type, id, root) {
     ${videos.length ? section("Episodes", `<div class="vlist">${videos.map(v => `<button class="vrow" type="button" data-vid="${esc(v.id)}">${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" width="120" height="68" loading="lazy" decoding="async">` : ""}<div><b>${esc(v.title || v.name || "Episode " + v.episode)}</b><span>${[v.season != null ? "S" + v.season : "", v.episode != null ? "E" + v.episode : ""].join(" ")}</span></div></button>`).join("")}</div>`) : ""}
     <div id="streams"></div>`;
   const ctx = { route, title: m.name, poster: m.poster };
-  page.toggleList = () => { toggleWatch(route, m.name, m.poster); const b = root.querySelector("#toggleList"); if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching"; };
+  page.toggleList = () => { toggleWatch(route, m.name, m.poster); const b = root.querySelector("#toggleList"); if (b) b.textContent = KumoBrowse.isWatching(watchlist[route]) ? "✓ Watching" : "+ Watching"; };
   const vLabel = v => v.title || v.name || `Episode ${v.episode}`;
   const fetchStreams = async i => {
     const vid = i < 0 ? id : videos[i].id, label = i < 0 ? m.name : vLabel(videos[i]);
@@ -971,22 +1011,226 @@ async function viewMeta(key, type, id, root) {
   page.loadVid = vid => load(videos.findIndex(x => x.id === vid));
 }
 
-function toggleWatch(route, title, poster) {
-  if (watchlist[route]) { delete watchlist[route]; removed[route] = Date.now(); store.set("removed", removed); toast("Removed from Watching"); }
-  else { watchlist[route] = { route, title, poster, added: Date.now() }; toast("Added to Watching"); }
+function saveWatchlist() {
   store.set("watchlist", watchlist);
-  paintQuick(route);
   refreshContinue();
   refreshList();
   loadNotes();
   scheduleSync();
 }
-function viewList(root) {
-  const items = watchingItems();
-  root.innerHTML =
-    section("Watching", items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "", "", { defer: false })).join("")}</div>` : `<div class="empty"><h3>You're not watching anything yet</h3>Tap <b>+ Watching</b> on any show to keep it here and get told when new episodes come out.</div>`) +
-    `<p class="note">Your shows are saved on this device.</p>`;
+function toggleWatch(route, title, poster) {
+  const current = watchlist[route];
+  if (current && KumoBrowse.isWatching(current)) {
+    delete watchlist[route];
+    removed[route] = Date.now();
+    store.set("removed", removed);
+    toast("Removed from Watching");
+  } else if (current) {
+    watchlist[route] = { ...current, route, title: title || current.title, poster: poster || current.poster, status: "watching" };
+    delete removed[route];
+    store.set("removed", removed);
+    toast("Moved to Watching");
+  } else {
+    watchlist[route] = { route, title, poster, added: Date.now(), status: "watching" };
+    delete removed[route];
+    store.set("removed", removed);
+    toast("Added to Watching");
+  }
+  saveWatchlist();
+  paintQuick(route);
+  paintListPickers();
+}
+function setListStatus(route, title, poster, status) {
+  const known = KumoBrowse.STATUSES.some(row => row.id === status);
+  if (!known) {
+    if (watchlist[route]) {
+      delete watchlist[route];
+      removed[route] = Date.now();
+      store.set("removed", removed);
+      toast("Removed from your lists");
+    }
+  } else {
+    const prev = watchlist[route];
+    watchlist[route] = {
+      route,
+      title: title || prev?.title || "",
+      poster: poster || prev?.poster || "",
+      added: prev?.added || Date.now(),
+      status,
+    };
+    delete removed[route];
+    store.set("removed", removed);
+    toast(KumoBrowse.STATUSES.find(row => row.id === status).label);
+  }
+  saveWatchlist();
+  paintQuick(route);
+  paintListPickers();
+}
+const LIST_EMPTY = {
+  watching: ["You're not watching anything yet", "Tap <b>+ Watching</b> on any show to keep it here and get told when new episodes come out."],
+  planning: ["Nothing planned yet", "Choose Plan to Watch on a show page to keep it here."],
+  completed: ["Nothing completed yet", "Choose Completed on a show page when you finish it."],
+  hold: ["Nothing on hold", "Choose On Hold on a show page to park it here."],
+  dropped: ["Nothing dropped", "Choose Dropped on a show page to keep it out of Watching."],
+};
+function viewList(root, which) {
+  const status = KumoBrowse.statusByRoute(which || "watching");
+  const items = listItems(status.id);
+  const [head, body] = LIST_EMPTY[status.id];
+  const segs = `<nav class="segs" aria-label="Lists">${KumoBrowse.STATUSES.map(row => {
+    const href = row.route ? "#/list/" + row.route : "#/list";
+    return `<a class="seg" href="${href}"${row.id === status.id ? ' aria-current="true"' : ""}>${esc(row.label)}</a>`;
+  }).join("")}</nav>`;
+  root.innerHTML = segs +
+    section(status.label, items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "", "", { defer: false })).join("")}</div>` : `<div class="empty"><h3>${head}</h3>${body}</div>`) +
+    `<p class="note">Your shows are saved on this device. + Watching still adds to Watching only.</p>`;
   observeLazy(root);
+}
+const fillerCache = new Map();
+let fillerReadmePromise = null;
+const REC_QUERY = `query($id:Int){Media(id:$id,type:ANIME){recommendations(sort:RATING_DESC,perPage:20){nodes{mediaRecommendation{${MEDIA_FIELDS}}}}}}`;
+function scheduleShowExtras(root, m) {
+  const token = m.id + ":" + (m.idMal || "");
+  const same = root.dataset.extras === token && root.querySelector("#recs .rail");
+  root.dataset.extras = token;
+  if (!same) loadRecs(root, m);
+  loadFillerMarks(root, m.idMal);
+}
+async function loadRecs(root, m) {
+  const box = root.querySelector("#recs");
+  if (!box) return;
+  try {
+    const data = await anilist(REC_QUERY, { id: +m.id }, { key: "recs:" + m.id, ttl: TTL.media });
+    if (!box.isConnected) return;
+    const nodes = data?.Media?.recommendations?.nodes || [];
+    const items = nodes.map(node => node?.mediaRecommendation).filter(item => item && item.id);
+    if (!items.length) { box.remove(); return; }
+    const title = titleOf(m);
+    const heading = KumoBrowse.recTitle(KumoBrowse.listStatus(watchlist[`#/a/${m.id}`]), title);
+    box.innerHTML = section(heading, `<div class="rail">${items.map((item, i) => aniCard(item, i)).join("")}</div>`);
+    observeLazy(box);
+  } catch {
+    if (box.isConnected) box.remove();
+  }
+}
+async function fillerFromAnira(mal) {
+  if (!fillerReadmePromise) {
+    fillerReadmePromise = fetch("https://raw.githubusercontent.com/AniraTeam/AniFiller/main/README.md").then(r => r.ok ? r.text() : "").catch(() => "");
+  }
+  const file = KumoBrowse.fillerFile(await fillerReadmePromise, mal);
+  if (!file) return null;
+  const response = await fetch("https://cdn.jsdelivr.net/gh/AniraTeam/AniFiller@main/data/shows/" + encodeURIComponent(file));
+  if (!response.ok) return null;
+  return KumoBrowse.fillerNumbers(await response.json());
+}
+async function fetchFiller(mal) {
+  const key = String(mal || "");
+  if (!key) return {};
+  if (fillerCache.has(key)) return fillerCache.get(key);
+  let map = null;
+  try {
+    const response = await fetch("https://anifillerpedia.wiki/api/v1/series?mal_id=" + encodeURIComponent(key));
+    if (response.ok) {
+      const seriesId = KumoBrowse.seriesIdFromSearch(await response.json());
+      if (seriesId) {
+        const episodes = await fetch("https://anifillerpedia.wiki/api/v1/series/" + seriesId + "/episodes");
+        if (episodes.ok) map = KumoBrowse.fillerNumbers(await episodes.json());
+      }
+    }
+  } catch {}
+  if (!map) {
+    try { map = await fillerFromAnira(key); } catch { map = null; }
+  }
+  const ready = map || {};
+  fillerCache.set(key, ready);
+  return ready;
+}
+function applyFiller(root, map) {
+  if (!root || !map) return;
+  root.querySelectorAll(".ep[data-ep]").forEach(link => {
+    const wrap = link.closest(".ep-wrap") || link;
+    const on = !!map[link.dataset.ep];
+    wrap.classList.toggle("is-filler", on);
+    let tag = wrap.querySelector(".filler-tag");
+    if (on && !tag) {
+      tag = document.createElement("span");
+      tag.className = "filler-tag";
+      tag.textContent = "Filler";
+      wrap.appendChild(tag);
+    } else if (!on && tag) tag.remove();
+  });
+}
+async function loadFillerMarks(root, mal) {
+  if (!root || !mal) return;
+  const map = await fetchFiller(mal);
+  if (!root.isConnected) return;
+  applyFiller(root, map);
+}
+const CAL_PAGE = `query($page:Int,$from:Int,$to:Int,$ids:[Int]){
+  Page(page:$page,perPage:50){pageInfo{hasNextPage}airingSchedules(mediaId_in:$ids,airingAt_greater:$from,airingAt_lesser:$to,sort:TIME){episode airingAt media{id type isAdult title{romaji english} coverImage{large medium}}}}}`;
+const CAL_ALL = `query($page:Int,$from:Int,$to:Int){
+  Page(page:$page,perPage:50){pageInfo{hasNextPage}airingSchedules(airingAt_greater:$from,airingAt_lesser:$to,sort:TIME){episode airingAt media{id type isAdult title{romaji english} coverImage{large medium}}}}}`;
+let calAll = !!store.get("calAll", false);
+async function fetchWeek(from, to, ids) {
+  const rows = [];
+  const chunks = ids ? [] : [null];
+  if (ids) for (let i = 0; i < ids.length; i += 40) chunks.push(ids.slice(i, i + 40));
+  for (const chunk of chunks) {
+    for (let page = 1; page <= 6; page++) {
+      const vars = { page, from, to };
+      if (chunk) vars.ids = chunk;
+      const data = await anilist(chunk ? CAL_PAGE : CAL_ALL, vars, { key: "cal:" + (chunk ? chunk.join(",") : "all") + ":" + from + ":" + page, ttl: 10 * 60 * 1000 });
+      for (const row of data?.Page?.airingSchedules || []) {
+        const media = row.media;
+        if (!media || media.isAdult || (media.type && media.type !== "ANIME")) continue;
+        rows.push(row);
+      }
+      if (!data?.Page?.pageInfo?.hasNextPage) break;
+    }
+  }
+  return rows;
+}
+async function viewCalendar(root, gen) {
+  const bounds = KumoBrowse.weekBounds(Date.now());
+  const days = KumoBrowse.weekDays(Date.now());
+  root.innerHTML = `
+    <div class="cal-head">
+      <a class="more-back" href="#/" data-back aria-label="Back to Home">‹</a>
+      <h1 class="page-title">This week</h1>
+      <button class="btn ghost small" type="button" id="calToggle" aria-pressed="${calAll ? "true" : "false"}">${calAll ? "Only Watching" : "All airing anime"}</button>
+    </div>
+    <div id="calBody"><p class="muted">Loading the week…</p></div>`;
+  const toggle = root.querySelector("#calToggle");
+  if (toggle) toggle.onclick = () => {
+    calAll = !calAll;
+    store.set("calAll", calAll);
+    viewCalendar(root, gen);
+  };
+  const box = root.querySelector("#calBody");
+  const ids = watchingItems().map(item => +(String(item.route || "").match(/^#\/a\/(\d+)$/) || [])[1]).filter(Boolean);
+  if (!calAll && !ids.length) {
+    box.innerHTML = `<div class="empty"><h3>Nothing on your Watching list</h3>Add a show with + Watching, or switch to all airing anime.</div>`;
+    return;
+  }
+  try {
+    const rows = await fetchWeek(bounds.from, bounds.to, calAll ? null : ids);
+    if (root.dataset.gen !== String(gen) || !box.isConnected) return;
+    const byDay = new Map(KumoBrowse.groupSchedules(rows).map(group => [group.key, group.items]));
+    box.innerHTML = days.map(day => {
+      const items = byDay.get(day.key) || [];
+      const label = new Date(day.at * 1000).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+      const body = items.length ? items.map(row => {
+        const media = row.media || {};
+        const title = media.title?.english || media.title?.romaji || "Untitled";
+        const poster = media.coverImage?.large || media.coverImage?.medium || "";
+        const when = new Date(row.airingAt * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        return `<a class="cal-row" href="#/a/${media.id}">${poster ? `<img src="${esc(poster)}" alt="" width="42" height="62" loading="lazy" decoding="async">` : `<span class="cal-ph"></span>`}<div><b>${esc(title)}</b><span>Episode ${esc(row.episode)} · ${esc(when)}</span></div></a>`;
+      }).join("") : `<p class="cal-empty">Nothing airing</p>`;
+      return `<section class="cal-day"><h2>${esc(label)}</h2>${body}</section>`;
+    }).join("");
+  } catch {
+    if (root.dataset.gen === String(gen) && box.isConnected) box.innerHTML = `<div class="empty"><h3>Couldn't load the calendar</h3>AniList didn't respond. Try again in a bit.</div>`;
+  }
 }
 function viewAddons(root) {
   const all = allAddons();
@@ -1049,7 +1293,9 @@ function paintSources(root, rows, report, pending) {
   const box = root.querySelector("#wtSources");
   if (!box) return;
   page.rows = rows;
-  const groups = [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"], ["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]];
+  const groups = (prefs.audio === "dub"
+    ? [["dub", "DUB", "🎙"], ["sub", "SUB", "CC"]]
+    : [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"]]).concat([["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]]);
   const kind = st => { try { return KumoPlayback.kindLabel(st); } catch { return ""; } };
   const tagOf = disp => disp === "blocked" ? "Blocked by Real-Debrid" : disp === "uncached" ? "Not cached" : disp === "wrong-ip" ? "Different connection" : disp === "slate" ? "Unavailable" : disp === "failed" ? "Didn't play" : "";
   const showAll = !!prefs.showAllSources;
@@ -1091,7 +1337,13 @@ function paintWatch(root, m, ep) {
       <div class="wt-status" id="wtStatus">Finding sources…</div>
     </div>
     <div class="wt-bar">
-      <div class="wt-toggles">${toggle("autoPlay", "Auto Play")}${isMovie ? "" : toggle("autoNext", "Auto Next")}${toggle("autoSkip", "Auto Skip intro")}${toggle("showAllSources", "Show all sources")}</div>
+      <div class="wt-toggles">${toggle("autoPlay", "Auto Play")}${isMovie ? "" : toggle("autoNext", "Auto Next")}${toggle("autoSkip", "Auto Skip")}${toggle("showAllSources", "Show all sources")}</div>
+      <label class="wt-player">Audio
+        <select id="audioPref" aria-label="Prefer sub or dub">
+          <option value="sub">Sub</option>
+          <option value="dub">Dub</option>
+        </select>
+      </label>
       <label class="wt-player">Play outside in
         <select id="extPlayer" aria-label="External player">
           <option value="infuse">Infuse</option>
@@ -1104,11 +1356,14 @@ function paintWatch(root, m, ep) {
     <div class="wt-info">You're watching <b>${isMovie ? esc(title) : "Episode " + ep}</b>${isMovie ? "" : ` of <a href="${route}">${esc(title)}</a>`}. If a source doesn't work, try another one below.</div>
     <div id="wtSources" class="wt-sources"><p class="muted">Asking your add-ons…</p></div>
     ${air ? `<div class="wt-air">🔔 ${esc(air)}</div>` : ""}
-    ${isMovie ? "" : section("Episodes", `<div class="eps" data-route="${esc(route)}">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
-      const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
-      return `<a class="ep${pct > 92 ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}" ${n === ep ? 'aria-current="true"' : ""}>${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
-    }).join("")}</div>`)}`;
+    ${isMovie ? "" : section("Episodes", `<div class="eps" data-route="${esc(route)}" data-title="${esc(title)}" data-poster="${esc(m.coverImage?.large || "")}">${episodeCells(id, route, count, ep)}</div><button class="btn ghost small" type="button" id="markSeason">Mark season watched</button>`)}`;
+  loadFillerMarks(root, m.idMal);
   const extPlayer = root.querySelector("#extPlayer");
+  const audioPref = root.querySelector("#audioPref");
+  if (audioPref) {
+    audioPref.value = prefs.audio === "dub" ? "dub" : "sub";
+    audioPref.onchange = () => { prefs.audio = audioPref.value === "dub" ? "dub" : "sub"; store.set("playerPrefs", prefs); refreshSources(); };
+  }
   if (extPlayer) {
     extPlayer.value = ["infuse", "vlc", "outplayer"].includes(prefs.externalPlayer) ? prefs.externalPlayer : "infuse";
     extPlayer.onchange = () => { prefs.externalPlayer = extPlayer.value; store.set("playerPrefs", prefs); };
@@ -1225,6 +1480,11 @@ function refreshProgressMarks(root) {
       if (pct) { if (!bar) { bar = document.createElement("span"); bar.className = "p"; el.appendChild(bar); } bar.style.width = pct + "%"; }
       else if (bar) bar.remove();
     });
+    box.querySelectorAll("[data-mark]").forEach(btn => {
+      const on = episodeWatched(progress[show + ":" + btn.dataset.mark]);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.setAttribute("aria-label", on ? `Mark episode ${btn.dataset.mark} unwatched` : `Mark episode ${btn.dataset.mark} watched`);
+    });
   });
 }
 
@@ -1260,7 +1520,7 @@ function swapView(fn) {
 }
 function updateDock(key) {
   const p = key.replace(/^#\/?/, "").split("/")[0];
-  const tab = { "": "home", search: "search", list: "list", addons: "addons", more: "home" }[p] || "";
+  const tab = { "": "home", search: "search", list: "list", addons: "addons", more: "home", calendar: "home" }[p] || "";
   document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === tab ? "page" : "false"));
 }
 function snapshotPage(el) {
@@ -1291,7 +1551,8 @@ function renderRoute(key, root, gen) {
   else if (p === "search") { if (rest[0]) filters.q = decodeURIComponent(rest.join("/")); viewSearch(root, !rest[0] && !filters.q); }
   else if (p === "a") viewAnime(rest[0], root, gen);
   else if (p === "m") viewMeta(decodeURIComponent(rest[0]), decodeURIComponent(rest[1] || ""), decodeURIComponent(rest.slice(2).join("/")), root, gen);
-  else if (p === "list") viewList(root);
+  else if (p === "list") viewList(root, rest[0] || "watching");
+  else if (p === "calendar") viewCalendar(root, gen);
   else if (p === "addons") viewAddons(root);
   else viewHome(root, gen);
 }
@@ -1314,12 +1575,18 @@ function route() {
   if (parts[0] === "a" && parts[2]) { location.replace(`#/watch/${parts[1]}/${parts[2]}`); return; }
   const pop = navPop; navPop = false;
   updateDock(key);
-  if (forceRoute) { viewNodes.delete(key); viewNodes.delete("#/"); viewNodes.delete("#/list"); if (activeKey === key) activeKey = ""; forceRoute = false; }
+  if (forceRoute) {
+    for (const k of [...viewNodes.keys()]) {
+      if (k === "#/" || k === "#/list" || k.startsWith("#/list/")) viewNodes.delete(k);
+    }
+    if (activeKey === key) activeKey = "";
+    forceRoute = false;
+  }
   if (key === activeKey && app.firstElementChild?.classList?.contains("view")) {
     cancelPlayback();
     refreshProgressMarks(app.firstElementChild);
     if (key === "#/") refreshContinue();
-    if (key === "#/list") refreshList();
+    if (key === "#/list" || key.startsWith("#/list/")) refreshList();
     return;
   }
   cancelPlayback();
@@ -1354,7 +1621,7 @@ function route() {
       requestAnimationFrame(() => requestAnimationFrame(snap));
       refreshProgressMarks(root);
       if (key === "#/") refreshContinue();
-      if (key === "#/list") refreshList();
+      if (key === "#/list" || key.startsWith("#/list/")) refreshList();
       return;
     }
     window.scrollTo(0, key === "#/" && pop ? homeScroll : 0);
@@ -1378,6 +1645,27 @@ app.addEventListener("click", e => {
     e.stopPropagation();
     const routeKey = quick.dataset.quick;
     if (routeKey) toggleWatch(routeKey, quick.dataset.title || "", quick.dataset.poster || "");
+    return;
+  }
+  const mark = t.closest("[data-mark]");
+  if (mark && app.contains(mark)) {
+    e.preventDefault();
+    e.stopPropagation();
+    const box = mark.closest(".eps");
+    const show = box?.dataset.route;
+    const n = +mark.dataset.mark;
+    if (show && n) writeWatched(show, [n], mark.getAttribute("aria-pressed") !== "true", { title: box.dataset.title || "", poster: box.dataset.poster || "" });
+    return;
+  }
+  const season = t.closest("#markSeason");
+  if (season && app.contains(season)) {
+    const box = season.parentElement?.querySelector(".eps") || app.querySelector(".eps");
+    const show = box?.dataset.route;
+    const nums = [...(box?.querySelectorAll("[data-mark]") || [])].map(b => +b.dataset.mark).filter(Boolean);
+    if (show && nums.length) {
+      writeWatched(show, nums, true, { title: box.dataset.title || "", poster: box.dataset.poster || "" });
+      toast("Season marked watched");
+    }
     return;
   }
   const pref = t.closest("[data-pref]");
@@ -1435,7 +1723,7 @@ function openShell(label) {
 }
 function teardown() {
   current?.record?.();
-  clearInterval(saveTimer); clearInterval(countTimer);
+  clearInterval(saveTimer); clearInterval(countTimer); clearInterval(current?.skipTimer);
   // Stop playback before the element is removed, or the browser rejects
   // play() with an uncaught AbortError when you leave the page.
   document.querySelectorAll("media-player, video").forEach(el => {
@@ -1812,7 +2100,7 @@ function highlightSource(index) {
 async function playFromList(rows, startIndex, info, mount, opts) {
   const gen = ++playGen;
   const explicit = !!opts?.explicit;
-  const order = KumoPlayback.playbackOrder(rows, explicit ? startIndex : null, { safari: isSafariPlayer(), explicit, skipUncached: !explicit });
+  const order = KumoPlayback.playbackOrder(rows, explicit ? startIndex : null, { safari: isSafariPlayer(), explicit, skipUncached: !explicit, audio: prefs.audio === "dub" ? "dub" : "sub" });
   const attempts = [];
   const seen = new Set();
   let lastExternal = "";
@@ -1902,6 +2190,7 @@ function play(s, info, addonKey, mount, prepared) {
       <media-video-layout></media-video-layout>
       <div class="pv-pills">
         <button class="pv-pill" id="pvIntro" hidden>Skip intro »</button>
+        <button class="pv-pill" id="pvOutro" hidden>Skip outro »</button>
         <button class="pv-pill solid" id="pvNext" hidden>${info.next ? esc(info.next.short) + " ▶" : ""}</button>
       </div>
       <div class="pv-count" id="pvCount" hidden></div>
@@ -1935,29 +2224,79 @@ function play(s, info, addonKey, mount, prepared) {
   vs.addEventListener("pause", record);
   current.record = record;
 
-  // Skip intro (85 s, a typical anime opening) and Next episode
-  let introUsed = false;
-  const skip = d => { vs.currentTime = Math.min(Math.max(0, vs.currentTime + d), (vs.duration || 1e9) - 0.5); };
-  vs.addEventListener("time-update", () => {
-    const d = vs.duration || 0, t = vs.currentTime;
-    const inIntro = !introUsed && d > 600 && t > 3 && t < 180;
-    if (inIntro && prefs.autoSkip) { introUsed = true; skip(85); }
-    $("#pvIntro").hidden = !inIntro || prefs.autoSkip;
-    $("#pvNext").hidden = !(info.next && d && d - t < 120);
-  });
-  $("#pvIntro").onclick = () => { introUsed = true; skip(85); };
+  // AniSkip intro/outro, then a cancelable countdown into the next episode.
+  let introUsed = false, outroUsed = false, nextCancelled = false, countArmed = false;
+  let skips = null;
+  const seekTo = t => {
+    const video = vs.querySelector("video");
+    const limit = vs.duration || video?.duration || 1e9;
+    const next = Math.min(Math.max(0, t), Math.max(0, limit - 0.4));
+    try { vs.currentTime = next; } catch {}
+    if (video) video.currentTime = next;
+  };
+  const armCountdown = () => {
+    if (countArmed || nextCancelled || !info.next || !prefs.autoNext) return;
+    if (prepared?.checkStatus && vs.duration && vs.duration < 40) return;
+    countArmed = true;
+    let n = 8;
+    const box = $("#pvCount");
+    if (!box) return;
+    const draw = () => { box.innerHTML = `<div>${esc(info.next.short)} in <b>${n}</b></div><div class="pv-count-btns"><button class="pv-pill solid" id="pvNow">Play now</button><button class="pv-pill" id="pvCancel">Cancel</button></div>`; };
+    draw();
+    box.hidden = false;
+    clearInterval(countTimer);
+    countTimer = setInterval(() => {
+      n--;
+      if (n <= 0) { clearInterval(countTimer); goNext(); }
+      else draw();
+    }, 1000);
+    box.onclick = e => {
+      if (e.target.id === "pvNow") { clearInterval(countTimer); goNext(); }
+      if (e.target.id === "pvCancel") { clearInterval(countTimer); nextCancelled = true; box.hidden = true; }
+    };
+  };
+  const loadSkips = duration => {
+    const mal = info.mal || info.media?.idMal;
+    const ep = info.ep;
+    if (!mal || !ep) { skips = {}; return; }
+    const q = new URLSearchParams();
+    q.append("types[]", "op");
+    q.append("types[]", "ed");
+    if (duration > 1) q.set("episodeLength", String(Math.round(duration)));
+    fetchTimeout(`https://api.aniskip.com/v2/skip-times/${mal}/${ep}?${q}`, 8000).then(async r => {
+      const j = r.ok ? await r.json() : null;
+      if (current?.info !== info) return;
+      skips = KumoPlayback.skipWindows(j && j.found ? j.results : []);
+    }).catch(() => { if (current?.info === info) skips = {}; });
+  };
+  const onTime = () => {
+    const video = vs.querySelector("video");
+    const d = (video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0) || vs.duration || 0;
+    const t = (video && Number.isFinite(video.currentTime) ? video.currentTime : vs.currentTime) || 0;
+    if (skips == null && d > 1) { skips = {}; loadSkips(d); }
+    const op = skips && skips.op, ed = skips && skips.ed;
+    const inOp = KumoPlayback.inSkip(t, op);
+    const inEd = KumoPlayback.inSkip(t, ed);
+    if (inOp && prefs.autoSkip && !introUsed) { introUsed = true; seekTo(op.end); }
+    if (inEd && prefs.autoSkip && !outroUsed) { outroUsed = true; seekTo(ed.end); }
+    const introBtn = $("#pvIntro"), outroBtn = $("#pvOutro");
+    if (introBtn) introBtn.hidden = !inOp || (prefs.autoSkip && introUsed);
+    if (outroBtn) outroBtn.hidden = !inEd || (prefs.autoSkip && outroUsed);
+    const nextBtn = $("#pvNext");
+    if (nextBtn) nextBtn.hidden = !(info.next && d && d - t < 120);
+    if (info.next && prefs.autoNext && d > 30 && ((ed && t >= ed.start) || (d - t <= 12 && d - t > 0.4))) armCountdown();
+  };
+  vs.addEventListener("time-update", onTime);
+  vs.addEventListener("timeupdate", onTime);
+  current.skipTimer = setInterval(onTime, 250);
+  $("#pvIntro").onclick = () => { const op = skips && skips.op; if (!op) return; introUsed = true; seekTo(op.end); $("#pvIntro").hidden = true; };
+  $("#pvOutro").onclick = () => { const ed = skips && skips.ed; if (!ed) return; outroUsed = true; seekTo(ed.end); $("#pvOutro").hidden = true; };
   $("#pvNext").onclick = () => goNext();
   vs.addEventListener("ended", () => {
     record();
     if (outcome === "fail") return;
     if (prepared?.checkStatus && vs.duration && vs.duration < 40) return;
-    if (!info.next || !prefs.autoNext) return;
-    let n = 5;
-    const box = $("#pvCount");
-    const draw = () => box.innerHTML = `<div>${esc(info.next.short)} in <b>${n}</b></div><div class="pv-count-btns"><button class="pv-pill solid" id="pvNow">Play now</button><button class="pv-pill" id="pvCancel">Cancel</button></div>`;
-    draw(); box.hidden = false;
-    countTimer = setInterval(() => { n--; if (n <= 0) { clearInterval(countTimer); goNext(); } else draw(); }, 1000);
-    box.onclick = e => { if (e.target.id === "pvNow") { clearInterval(countTimer); goNext(); } if (e.target.id === "pvCancel") { clearInterval(countTimer); box.hidden = true; } };
+    armCountdown();
   });
 
   // Subtitles from the stream and from subtitle add-ons; turn on the last language picked
@@ -2038,6 +2377,7 @@ function noteContext() {
   const watchingIds = new Set();
   const addedAt = {};
   for (const [route, item] of Object.entries(watchlist)) {
+    if (!KumoBrowse.isWatching(item)) continue;
     const id = Number((route.match(/^#\/a\/(\d+)$/) || [])[1]);
     if (!id) continue;
     watchingIds.add(id);
@@ -2107,8 +2447,16 @@ function syncAirPills() {
     if (pill.textContent !== label) pill.textContent = label;
   }));
 }
+function paintListPickers() {
+  eachView(root => {
+    root.querySelectorAll("#listStatus").forEach(sel => {
+      const status = KumoBrowse.listStatus(watchlist[sel.dataset.route]);
+      if (sel.value !== status) sel.value = status;
+    });
+  });
+}
 function paintQuick(route) {
-  const on = !!watchlist[route];
+  const on = KumoBrowse.isWatching(watchlist[route]);
   eachView(root => {
     root.querySelectorAll(".quick-add").forEach(btn => {
       if (btn.dataset.quick !== route) return;
@@ -2179,7 +2527,7 @@ function renderBell() {
   const row = item => `<a class="note-row" href="#/watch/${item.mediaId}/${item.episode}">${item.poster ? `<img src="${esc(item.poster)}" alt="" width="36" height="54" loading="lazy" decoding="async">` : `<span class="note-ph" aria-hidden="true"></span>`}<div><b>${esc(item.title || "Episode " + item.episode)}</b><span>Episode ${item.episode} · ${ago(item.airingAt)}</span></div></a>`;
   const rows = noteState.items.map(row).join("");
   panel.innerHTML = `<div class="notes-head">New episodes</div>` +
-    (!Object.keys(watchlist).length ? `<p class="notes-empty">Add a show to Watching and Kumo will tell you when a new episode airs.</p>`
+    (!watchingItems().length ? `<p class="notes-empty">Add a show to Watching and Kumo will tell you when a new episode airs.</p>`
       : notesError && !rows ? `<p class="notes-empty">Couldn't check for new episodes. Try again in a bit.</p>`
       : rows || `<p class="notes-empty">No new episodes. When one airs for a show you're watching, it stays here until you watch it.</p>`);
 }
@@ -2248,15 +2596,24 @@ async function pushNow() {
 }
 function scheduleSync() { if (account) { clearTimeout(syncTimer); syncTimer = setTimeout(pushNow, 2000); } }
 
+function audioPrefHtml() {
+  const v = prefs.audio === "dub" ? "dub" : "sub";
+  return `<label class="acct-audio">Prefer <select id="acctAudio" aria-label="Prefer sub or dub"><option value="sub"${v === "sub" ? " selected" : ""}>Sub</option><option value="dub"${v === "dub" ? " selected" : ""}>Dub</option></select></label>`;
+}
+function bindAudioPref(panel) {
+  const sel = panel?.querySelector("#acctAudio");
+  if (!sel) return;
+  sel.onchange = () => { prefs.audio = sel.value === "dub" ? "dub" : "sub"; store.set("playerPrefs", prefs); };
+}
 function renderAccount() {
   const btn = $("#acctBtn");
   btn.innerHTML = account ? `<span class="avatar">${esc((account.email || "?")[0].toUpperCase())}</span>`
     : `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.4 0-8 2.2-8 5v1a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1c0-2.8-3.6-5-8-5Z"/></svg>`;
   btn.setAttribute("aria-label", account ? "Your account" : "Sign up or log in");
   const panel = $("#acctPanel"); if (panel.hidden) return;
-  if (!sb) { panel.innerHTML = `<div class="notes-head">Account</div><p class="notes-empty">Accounts aren't switched on yet.</p>`; return; }
+  if (!sb) { panel.innerHTML = `<div class="notes-head">Account</div>${audioPrefHtml()}<p class="notes-empty">Accounts aren't switched on yet.</p>`; bindAudioPref(panel); return; }
   if (account && recovering) {
-    panel.innerHTML = `<div class="notes-head">Set a new password</div><form class="acct-body" id="pwForm">
+    panel.innerHTML = `<div class="notes-head">Set a new password</div>${audioPrefHtml()}<form class="acct-body" id="pwForm">
       <label for="newPass">New password</label><input id="newPass" type="password" autocomplete="new-password" minlength="6" required>
       <button class="btn" type="submit">Save password</button><p class="acct-msg" id="pwMsg" role="status"></p></form>`;
     $("#pwForm").onsubmit = async e => {
@@ -2265,18 +2622,20 @@ function renderAccount() {
       if (error) { $("#pwMsg").textContent = error.message; return; }
       recovering = false; toast("Password saved"); renderAccount();
     };
+    bindAudioPref(panel);
     return;
   }
   if (account) {
-    panel.innerHTML = `<div class="notes-head">Account</div><div class="acct-body"><p class="acct-email">${esc(account.email)}</p>
+    panel.innerHTML = `<div class="notes-head">Account</div>${audioPrefHtml()}<div class="acct-body"><p class="acct-email">${esc(account.email)}</p>
       <p class="muted small">Your Watching list and progress sync to every device you log in on.${syncState ? "<br>" + esc(syncState) : ""}</p>
       <button class="btn ghost small" id="acctSync">Sync now</button> <button class="btn ghost small" id="acctOut">Log out</button></div>`;
     $("#acctSync").onclick = () => pullAndMerge();
     $("#acctOut").onclick = async () => { await pushNow(); await sb.auth.signOut(); toast("Logged out"); };
+    bindAudioPref(panel);
     return;
   }
   const mode = panel.dataset.mode || "signup";
-  panel.innerHTML = `<div class="acct-tabs"><button data-mode="signup" aria-pressed="${mode === "signup"}">Create account</button><button data-mode="login" aria-pressed="${mode === "login"}">Log in</button></div>
+  panel.innerHTML = `${audioPrefHtml()}<div class="acct-tabs"><button data-mode="signup" aria-pressed="${mode === "signup"}">Create account</button><button data-mode="login" aria-pressed="${mode === "login"}">Log in</button></div>
     <form class="acct-body" id="acctForm">
       <label for="acctEmail">Email</label><input id="acctEmail" type="email" autocomplete="email" required>
       <label for="acctPass">Password</label><input id="acctPass" type="password" autocomplete="${mode === "signup" ? "new-password" : "current-password"}" minlength="6" required>
@@ -2284,6 +2643,7 @@ function renderAccount() {
       ${mode === "login" ? `<button class="linkbtn" type="button" id="acctForgot">Forgot password?</button>` : `<p class="muted small">Syncs your Watching list and progress between devices.</p>`}
       <p class="acct-msg" id="acctMsg" role="status"></p>
     </form>`;
+  bindAudioPref(panel);
   panel.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => { panel.dataset.mode = b.dataset.mode; renderAccount(); });
   const msg = t => { $("#acctMsg").textContent = t; };
   $("#acctForm").onsubmit = async e => {

@@ -101,11 +101,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preload" href="https://fonts.gstatic.com/s/delagothicone/v19/hESp6XxvMDRA-2eD0lXpDa6QkBA2QkEIYgpLUQ.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="style.css?v=30" as="style">
+<link rel="preload" href="style.css?v=31" as="style">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap"></noscript>
-<link rel="stylesheet" href="style.css?v=30" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="style.css?v=30"></noscript>
+<link rel="stylesheet" href="style.css?v=31" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="style.css?v=31"></noscript>
 </head>
 <body>
 <div id="splash" class="splash" aria-hidden="true">
@@ -168,7 +168,10 @@
 <header class="top">
   <div class="wrap bar">
     <a class="logo" href="#/" aria-label="Kumo home"><span class="logo-mark" aria-hidden="true"><span>K</span></span><span class="logo-word" aria-hidden="true">KUMO</span></a>
-    <button id="bellBtn" class="icon-btn bell push-right" aria-label="New episodes">
+    <a id="calBtn" class="icon-btn bell push-right" href="#/calendar" aria-label="Airing calendar">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M7 2h2v2h6V2h2v2h3a1 1 0 0 1 1 1v15a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a1 1 0 0 1 1-1h3V2Zm12 8H5v9h14v-9ZM5 8h14V6H5v2Z"/></svg>
+    </a>
+    <button id="bellBtn" class="icon-btn bell" aria-label="New episodes">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-1.7 1.7A1 1 0 0 0 4 19.4h16a1 1 0 0 0 .7-1.7Z"/></svg>
       <span id="bellCount" class="bell-count" hidden></span>
     </button>
@@ -209,8 +212,9 @@
 
 <div id="toast" class="toast" hidden style="display:none"></div>
 
-<script src="notify.js?v=1" defer></script>
-<script src="playback.js?v=4" defer></script>
-<script src="app.js?v=30" defer></script>
+<script src="browse.js?v=1" defer></script>
+<script src="notify.js?v=2" defer></script>
+<script src="playback.js?v=5" defer></script>
+<script src="app.js?v=31" defer></script>
 </body>
 </html>

@@ -189,12 +189,13 @@ struct Dock: View {
 }
 
 struct SourceList: View {
+    @EnvironmentObject private var model: AppModel
     var rows: [StreamRow]
     var selected: Int?
     var onSelect: (StreamRow) -> Void
 
     var body: some View {
-        let groups = StreamLogic.displayGroups(rows)
+        let groups = StreamLogic.displayGroups(rows, prefer: model.prefs.audio == "dub" ? .dub : .sub)
         VStack(alignment: .leading, spacing: 16) {
             if rows.isEmpty {
                 EmptyBlock(title: "No sources for this episode", message: "None of your add-ons have it yet. Try again later, or install one from Add-ons.")
@@ -258,11 +259,15 @@ struct EpisodeGrid: View {
     var current: Int
     var seen: (Int) -> Bool
     var fraction: (Int) -> Double
+    var marked: ((Int) -> Bool)? = nil
+    var toggleMark: ((Int) -> Void)? = nil
+    var filler: Set<Int> = []
     var select: (Int) -> Void
 
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
             ForEach(1...max(count, 1), id: \.self) { number in
+                ZStack(alignment: .topTrailing) {
                 Button { select(number) } label: {
                     Text("\(number)")
                         .font(Theme.mono(13))
@@ -280,9 +285,32 @@ struct EpisodeGrid: View {
                             }
                         }
                         .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(alignment: .bottomLeading) {
+                            if filler.contains(number) {
+                                Text("Filler")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 3)
+                                    .padding(.vertical, 1)
+                                    .background(Color(red: 0.77, green: 0.23, blue: 0.23), in: RoundedRectangle(cornerRadius: 4))
+                                    .padding(3)
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Episode \(number)")
+                .accessibilityLabel(filler.contains(number) ? "Episode \(number), filler" : "Episode \(number)")
+                if let toggleMark {
+                    Button { toggleMark(number) } label: {
+                        Image(systemName: (marked?(number) ?? false) ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle((marked?(number) ?? false) ? Theme.logo : Theme.muted)
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(2)
+                    .accessibilityLabel((marked?(number) ?? false) ? "Mark episode \(number) unwatched" : "Mark episode \(number) watched")
+                }
+                }
             }
         }
     }
@@ -329,6 +357,8 @@ struct RouteScreen: View {
             MetaDetailView(addonURL: addon, type: type, metaID: id)
         case .more(let list):
             MoreBrowseView(list: list)
+        case .calendar:
+            CalendarView()
         }
     }
 }

@@ -11,6 +11,10 @@ struct PlayerScreen: View {
     @State private var scrubbing = false
     @State private var scrub: Double = 0
     @State private var introUsed = false
+    @State private var outroUsed = false
+    @State private var skips: SkipTimes?
+    @State private var nextCancelled = false
+    @State private var countArmed = false
     @State private var menu: MenuKind?
     @State private var countdown: Int?
     @State private var countdownTask: Task<Void, Never>?
@@ -48,6 +52,10 @@ struct PlayerScreen: View {
         .onAppear { wire() }
         .onChange(of: session.request, perform: { request in
             introUsed = false
+            outroUsed = false
+            skips = nil
+            nextCancelled = false
+            countArmed = false
             countdown = nil
             countdownTask?.cancel()
             guard let request else {
@@ -60,7 +68,7 @@ struct PlayerScreen: View {
         })
         .onChange(of: engine.seconds, perform: { time in
             guard !scrubbing else { return }
-            considerIntro(time)
+            considerSkip(time)
             saveIfNeeded(time)
         })
         .onDisappear {
@@ -143,19 +151,24 @@ struct PlayerScreen: View {
                 }
                 Spacer()
                 VStack(spacing: 10) {
-                    if showIntro {
+                    if showIntro || showOutro {
                         HStack {
                             Spacer()
-                            Button {
-                                introUsed = true
-                                engine.seek(to: engine.seconds + 85)
-                            } label: {
-                                Text("Skip intro »")
-                                    .font(Theme.body(14, weight: .bold))
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 10)
-                                    .background(.black.opacity(0.6), in: Capsule())
-                                    .overlay(Capsule().stroke(.white.opacity(0.5), lineWidth: 1))
+                            if showIntro {
+                                Button {
+                                    introUsed = true
+                                    if let end = skips?.op?.end { engine.seek(to: end) }
+                                } label: {
+                                    skipLabel("Skip intro »")
+                                }
+                            }
+                            if showOutro {
+                                Button {
+                                    outroUsed = true
+                                    if let end = skips?.ed?.end { engine.seek(to: end) }
+                                } label: {
+                                    skipLabel("Skip outro »")
+                                }
                             }
                         }
                     }
@@ -216,7 +229,7 @@ struct PlayerScreen: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(Theme.logo, in: Capsule())
-                Button("Cancel") { countdownTask?.cancel(); countdown = nil }
+                Button("Cancel") { countdownTask?.cancel(); countdown = nil; nextCancelled = true }
                     .font(Theme.body(14, weight: .bold))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
@@ -269,7 +282,20 @@ struct PlayerScreen: View {
     }
 
     private var showIntro: Bool {
-        !introUsed && !model.prefs.autoSkip && engine.duration > 600 && engine.seconds > 3 && engine.seconds < 180
+        AniSkip.contains(engine.seconds, skips?.op) && !introUsed
+    }
+
+    private var showOutro: Bool {
+        AniSkip.contains(engine.seconds, skips?.ed) && !outroUsed
+    }
+
+    private func skipLabel(_ title: String) -> some View {
+        Text(title)
+            .font(Theme.body(14, weight: .bold))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.black.opacity(0.6), in: Capsule())
+            .overlay(Capsule().stroke(.white.opacity(0.5), lineWidth: 1))
     }
 
     private func wire() {
@@ -278,7 +304,8 @@ struct PlayerScreen: View {
         }
         engine.onEnded = {
             save(time: engine.duration, duration: engine.duration)
-            guard model.prefs.autoNext, session.hasNext else { return }
+            guard model.prefs.autoNext, session.hasNext, !nextCancelled, !countArmed else { return }
+            countArmed = true
             startCountdown()
         }
         engine.preferredSubtitle = model.prefs.subLang
@@ -288,10 +315,28 @@ struct PlayerScreen: View {
         reveal()
     }
 
-    private func considerIntro(_ time: Double) {
-        guard model.prefs.autoSkip, !introUsed, engine.duration > 600, time > 3, time < 180 else { return }
-        introUsed = true
-        engine.seek(to: time + 85)
+    private func considerSkip(_ time: Double) {
+        let duration = engine.duration
+        if skips == nil, duration > 1, let mal = session.progressContext?.malID, let episode = session.progressContext?.episode, mal > 0, episode > 0 {
+            skips = SkipTimes()
+            Task {
+                let loaded = await AniSkip.fetch(malID: mal, episode: episode, duration: duration)
+                if session.progressContext?.episode == episode { skips = loaded }
+            }
+        }
+        if let op = skips?.op, AniSkip.contains(time, op), model.prefs.autoSkip, !introUsed {
+            introUsed = true
+            engine.seek(to: op.end)
+        }
+        if let ed = skips?.ed, AniSkip.contains(time, ed), model.prefs.autoSkip, !outroUsed {
+            outroUsed = true
+            engine.seek(to: min(ed.end, max(duration - 0.4, ed.start)))
+        }
+        let inOutro = skips?.ed.map { time >= $0.start } ?? false
+        let nearEnd = duration > 30 && duration - time <= 12 && duration - time > 0.4
+        guard (inOutro || nearEnd), model.prefs.autoNext, session.hasNext, !nextCancelled, !countArmed else { return }
+        countArmed = true
+        startCountdown()
     }
 
     private func saveIfNeeded(_ time: Double) {

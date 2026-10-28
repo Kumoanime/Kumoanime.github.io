@@ -63,6 +63,8 @@ state = N.ingestAired(state, [demo(4, now - 50), demo(3, now - 100)], ctx());
 assert.deepEqual(state.items.map(n => n.episode), [4], "the same episode never notifies twice");
 
 state = N.dismissEpisode(state, 5, 4, now);
+const restored = N.undismissEpisode(state, 5, 4, now);
+assert.ok(!(restored.dismissed || []).some(d => d.key === "5:4"), "unwatching clears that episode's dismissal");
 assert.equal(state.items.length, 0);
 state = N.ingestAired(state, [demo(4, now - 50)], ctx());
 assert.equal(state.items.length, 0, "watching it keeps it from coming back");

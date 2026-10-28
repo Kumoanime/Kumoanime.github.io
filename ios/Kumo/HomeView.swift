@@ -53,7 +53,21 @@ struct HomeView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) { KumoWordmark() }
-            ToolbarItem(placement: .navigationBarTrailing) { bell }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                HStack(spacing: 8) {
+                    NavigationLink(value: AppRoute.calendar) {
+                        Image(systemName: "calendar")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Theme.ink)
+                            .frame(width: 38, height: 38)
+                            .background(Theme.surface, in: Circle())
+                            .overlay(Circle().stroke(Theme.line, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Airing calendar")
+                    bell
+                }
+            }
         }
         .sheet(isPresented: $showNotes) {
             NotesSheet().environmentObject(model)

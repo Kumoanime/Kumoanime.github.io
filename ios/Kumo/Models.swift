@@ -22,11 +22,31 @@ enum MoreList: Hashable {
     case catalog(addon: String, type: String, id: String, title: String)
 }
 
+enum ListStatus: String, CaseIterable, Identifiable {
+    case watching, planning, completed, hold, dropped
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .watching: return "Watching"
+        case .planning: return "Plan to Watch"
+        case .completed: return "Completed"
+        case .hold: return "On Hold"
+        case .dropped: return "Dropped"
+        }
+    }
+
+    static func normalize(_ raw: String?) -> ListStatus {
+        if let raw, let status = ListStatus(rawValue: raw) { return status }
+        return .watching
+    }
+}
+
 enum AppRoute: Hashable {
     case anime(Int)
     case watch(id: Int, episode: Int, auto: Bool)
     case meta(addon: String, type: String, id: String)
     case more(MoreList)
+    case calendar
 
     /// Continue-watching rows open the episode. Catalog rows open the show.
     static func watching(_ route: String, episode: Int?) -> AppRoute? {
@@ -57,6 +77,8 @@ struct PlayerPrefs: Codable, Equatable {
     var autoSkip: Bool = false
     var speed: Double = 1
     var subLang: String = ""
+    /// "sub" or "dub". Missing on older saves means sub.
+    var audio: String? = nil
 }
 
 struct WatchItem: Codable, Equatable, Identifiable {
@@ -65,6 +87,38 @@ struct WatchItem: Codable, Equatable, Identifiable {
     var title: String
     var poster: String?
     var added: Double
+    /// Missing on older saves. Those rows stay on Watching.
+    var status: String?
+
+    init(key: String, title: String, poster: String?, added: Double, status: String? = "watching") {
+        self.key = key
+        self.title = title
+        self.poster = poster
+        self.added = added
+        self.status = status
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        title = (try? container.decode(String.self, forKey: .title)) ?? ""
+        poster = try container.decodeIfPresent(String.self, forKey: .poster)
+        added = (try? container.decode(Double.self, forKey: .added)) ?? 0
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, title, poster, added, status
+    }
+}
+
+struct AiringSlot: Identifiable, Hashable {
+    var id: String { "\(mediaID)-\(episode)-\(airingAt)" }
+    var mediaID: Int
+    var title: String
+    var poster: String?
+    var episode: Int
+    var airingAt: Int
 }
 
 struct ContinueEntry: Identifiable {
@@ -284,6 +338,7 @@ struct WatchContext: Equatable {
     var subType: String
     var hasNext: Bool
     var nextLabel: String?
+    var malID: Int? = nil
 }
 
 enum AddonError: LocalizedError {
@@ -316,6 +371,16 @@ enum JSONValue {
         case let n as NSNumber:
             if CFGetTypeID(n) == CFBooleanGetTypeID() { return n.boolValue ? "true" : "false" }
             return n.stringValue
+        default: return nil
+        }
+    }
+
+    static func double(_ any: Any?) -> Double? {
+        switch any {
+        case let d as Double: return d
+        case let i as Int: return Double(i)
+        case let s as String: return Double(s.trimmingCharacters(in: .whitespaces))
+        case let n as NSNumber: return n.doubleValue
         default: return nil
         }
     }

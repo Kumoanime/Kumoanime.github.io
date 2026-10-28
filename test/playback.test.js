@@ -52,6 +52,14 @@ const rows = [
 ];
 const order = P.playbackOrder(rows, null, { safari: true });
 assert.equal(order[0].i, 1, "cached sub is tried before an uncached sub");
+assert.equal(P.playbackOrder(rows, null, { safari: true, audio: "dub" })[0].audio, "dub", "dub preference is tried first");
+assert.deepEqual(P.skipWindows([
+  { skipType: "op", interval: { startTime: 10, endTime: 90 } },
+  { skipType: "ed", interval: { startTime: 1200, endTime: 1300 } },
+  { skipType: "op", interval: { startTime: 5, endTime: 5 } },
+]), { op: { start: 10, end: 90 }, ed: { start: 1200, end: 1300 } });
+assert.equal(P.inSkip(20, { start: 10, end: 90 }), true);
+assert.equal(P.inSkip(89.8, { start: 10, end: 90 }), false);
 assert.equal(P.playbackOrder(rows, 0, { safari: true })[0].i, 0, "an explicit index stays first");
 assert.deepEqual(P.playbackOrder(rows, 0, { safari: true, explicit: true }).map(r => r.i), [0], "a tap plays only that source");
 const auto = P.playbackOrder(rows, null, { safari: true, skipUncached: true });
