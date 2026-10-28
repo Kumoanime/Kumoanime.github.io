@@ -728,7 +728,7 @@ async function fetchAniStreams(ctx, ep, isMovie, onUpdate) {
   }
   const label = isMovie ? "Movie" : `Episode ${ep}`;
   const info = {
-    ...ctx, key: `${ctx.route}:${ep}`, label: `${ctx.title} · ${label}`, short: label, ep, subIds: ids, subType: isMovie ? "movie" : "series",
+    ...ctx, key: `${ctx.route}:${ep}`, label: `${ctx.title} · ${label}`, short: label, ep, mal: ctx.media.idMal || null, subIds: ids, subType: isMovie ? "movie" : "series",
     next: !isMovie && ep < ctx.count ? { short: `Episode ${ep + 1}`, page: `#/watch/${ctx.media.id}/${ep + 1}`, watch: `#/watch/${ctx.media.id}/${ep + 1}`, get: () => fetchAniStreams(ctx, ep + 1, false) } : null,
   };
   const slots = new Array(jobs.length);
@@ -1291,7 +1291,7 @@ function openShell(label) {
 }
 function teardown() {
   current?.record?.();
-  clearInterval(saveTimer); clearInterval(countTimer);
+  clearInterval(saveTimer); clearInterval(countTimer); clearInterval(current?.skipTimer);
   // Stop playback before the element is removed, or the browser rejects
   // play() with an uncaught AbortError when you leave the page.
   document.querySelectorAll("media-player, video").forEach(el => {
@@ -1795,7 +1795,13 @@ function play(s, info, addonKey, mount, prepared) {
   // AniSkip intro/outro, then a cancelable countdown into the next episode.
   let introUsed = false, outroUsed = false, nextCancelled = false, countArmed = false;
   let skips = null;
-  const seekTo = t => { vs.currentTime = Math.min(Math.max(0, t), Math.max(0, (vs.duration || 1e9) - 0.4)); };
+  const seekTo = t => {
+    const video = vs.querySelector("video");
+    const limit = vs.duration || video?.duration || 1e9;
+    const next = Math.min(Math.max(0, t), Math.max(0, limit - 0.4));
+    try { vs.currentTime = next; } catch {}
+    if (video) video.currentTime = next;
+  };
   const armCountdown = () => {
     if (countArmed || nextCancelled || !info.next || !prefs.autoNext) return;
     if (prepared?.checkStatus && vs.duration && vs.duration < 40) return;
@@ -1818,7 +1824,7 @@ function play(s, info, addonKey, mount, prepared) {
     };
   };
   const loadSkips = duration => {
-    const mal = info.media?.idMal || info.mal;
+    const mal = info.mal || info.media?.idMal;
     const ep = info.ep;
     if (!mal || !ep) { skips = {}; return; }
     const q = new URLSearchParams();
@@ -1831,8 +1837,10 @@ function play(s, info, addonKey, mount, prepared) {
       skips = KumoPlayback.skipWindows(j && j.found ? j.results : []);
     }).catch(() => { if (current?.info === info) skips = {}; });
   };
-  vs.addEventListener("time-update", () => {
-    const d = vs.duration || 0, t = vs.currentTime;
+  const onTime = () => {
+    const video = vs.querySelector("video");
+    const d = (video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0) || vs.duration || 0;
+    const t = (video && Number.isFinite(video.currentTime) ? video.currentTime : vs.currentTime) || 0;
     if (skips == null && d > 1) { skips = {}; loadSkips(d); }
     const op = skips && skips.op, ed = skips && skips.ed;
     const inOp = KumoPlayback.inSkip(t, op);
@@ -1845,7 +1853,10 @@ function play(s, info, addonKey, mount, prepared) {
     const nextBtn = $("#pvNext");
     if (nextBtn) nextBtn.hidden = !(info.next && d && d - t < 120);
     if (info.next && prefs.autoNext && d > 30 && ((ed && t >= ed.start) || (d - t <= 12 && d - t > 0.4))) armCountdown();
-  });
+  };
+  vs.addEventListener("time-update", onTime);
+  vs.addEventListener("timeupdate", onTime);
+  current.skipTimer = setInterval(onTime, 250);
   $("#pvIntro").onclick = () => { const op = skips && skips.op; if (!op) return; introUsed = true; seekTo(op.end); $("#pvIntro").hidden = true; };
   $("#pvOutro").onclick = () => { const ed = skips && skips.ed; if (!ed) return; outroUsed = true; seekTo(ed.end); $("#pvOutro").hidden = true; };
   $("#pvNext").onclick = () => goNext();
