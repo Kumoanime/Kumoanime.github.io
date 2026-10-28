@@ -30,7 +30,7 @@ struct SearchView: View {
                     menu("Type", filters.format, SearchFilters.formats) { filters.format = $0 }
                     menu("Status", filters.status, SearchFilters.statuses) { filters.status = $0 }
                     menu("Country", filters.country, SearchFilters.countries) { filters.country = $0 }
-                    menu("Rating", filters.rating, SearchFilters.ratings) { filters.rating = $0 }
+                    menu("Min score", filters.rating, SearchFilters.ratings) { filters.rating = $0 }
                     menu("Source", filters.source, SearchFilters.sources) { filters.source = $0 }
                     menu("Episodes", filters.episodes, SearchFilters.episodeBands) { filters.episodes = $0 }
                     menu(filters.sort == nil ? "Sort: popular" : "Sort", filters.sort, SearchFilters.sorts) { filters.sort = $0 }

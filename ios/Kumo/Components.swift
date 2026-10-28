@@ -261,6 +261,7 @@ struct EpisodeGrid: View {
     var fraction: (Int) -> Double
     var marked: ((Int) -> Bool)? = nil
     var toggleMark: ((Int) -> Void)? = nil
+    var filler: Set<Int> = []
     var select: (Int) -> Void
 
     var body: some View {
@@ -284,9 +285,20 @@ struct EpisodeGrid: View {
                             }
                         }
                         .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(alignment: .bottomLeading) {
+                            if filler.contains(number) {
+                                Text("Filler")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 3)
+                                    .padding(.vertical, 1)
+                                    .background(Color(red: 0.77, green: 0.23, blue: 0.23), in: RoundedRectangle(cornerRadius: 4))
+                                    .padding(3)
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Episode \(number)")
+                .accessibilityLabel(filler.contains(number) ? "Episode \(number), filler" : "Episode \(number)")
                 if let toggleMark {
                     Button { toggleMark(number) } label: {
                         Image(systemName: (marked?(number) ?? false) ? "checkmark.circle.fill" : "circle")
@@ -345,6 +357,8 @@ struct RouteScreen: View {
             MetaDetailView(addonURL: addon, type: type, metaID: id)
         case .more(let list):
             MoreBrowseView(list: list)
+        case .calendar:
+            CalendarView()
         }
     }
 }

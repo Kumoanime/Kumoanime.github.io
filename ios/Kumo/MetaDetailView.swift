@@ -56,15 +56,15 @@ struct MetaDetailView: View {
                     Text([meta.releaseInfo, meta.imdbRating.map { "★ \($0)" }, meta.genres.prefix(3).joined(separator: " · ")].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(Theme.body(13))
                         .foregroundStyle(Theme.muted)
-                    Button(model.watchlist[watchKey] == nil ? "+ Watching" : "Watching") {
+                    Button(model.isWatching(watchKey) ? "✓ Watching" : "+ Watching") {
                         model.toggleWatch(key: watchKey, title: meta.name, poster: meta.poster)
                     }
                     .font(Theme.body(14, weight: .bold))
-                    .foregroundStyle(model.watchlist[watchKey] == nil ? Theme.ink : Color.black)
+                    .foregroundStyle(model.isWatching(watchKey) ? Color.black : Theme.ink)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
-                    .background(model.watchlist[watchKey] == nil ? Theme.raise : Theme.logo, in: Capsule())
-                    .overlay(Capsule().stroke(Theme.line, lineWidth: model.watchlist[watchKey] == nil ? 1 : 0))
+                    .background(model.isWatching(watchKey) ? Theme.logo : Theme.raise, in: Capsule())
+                    .overlay(Capsule().stroke(Theme.line, lineWidth: model.isWatching(watchKey) ? 0 : 1))
                 }
             }
             .padding(.horizontal, 16)

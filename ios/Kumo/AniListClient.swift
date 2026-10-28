@@ -115,6 +115,63 @@ struct AniListClient {
         return ids
     }
 
+    func recommendations(id: Int) async throws -> [Media] {
+        let query = """
+        query($id:Int){ Media(id:$id,type:ANIME){ recommendations(sort:RATING_DESC,perPage:20){ nodes{ mediaRecommendation{ \(Self.fields) } } } } }
+        """
+        let data = try await graph(query, ["id": id])
+        let nodes = (((data["Media"] as? [String: Any])?["recommendations"] as? [String: Any])?["nodes"] as? [Any]) ?? []
+        return nodes.compactMap { node in
+            let media = (node as? [String: Any])?["mediaRecommendation"] as? [String: Any]
+            return media.map(Media.parse)
+        }.filter { $0.id > 0 }
+    }
+
+    func airingWeek(from: Int, to: Int, mediaIDs: [Int]?) async throws -> [AiringSlot] {
+        guard mediaIDs?.isEmpty != true || mediaIDs == nil else { return [] }
+        let chunks: [[Int]?]
+        if let mediaIDs {
+            chunks = stride(from: 0, to: mediaIDs.count, by: 40).map { Array(mediaIDs[$0..<min($0 + 40, mediaIDs.count)]) }
+        } else {
+            chunks = [nil]
+        }
+        var rows: [AiringSlot] = []
+        for chunk in chunks {
+            for page in 1...6 {
+                let query: String
+                var variables: [String: Any] = ["page": page, "from": from, "to": to]
+                if let chunk {
+                    query = """
+                    query($page:Int,$from:Int,$to:Int,$ids:[Int]){
+                      Page(page:$page,perPage:50){ pageInfo{ hasNextPage } airingSchedules(mediaId_in:$ids,airingAt_greater:$from,airingAt_lesser:$to,sort:TIME){ episode airingAt media{ id type isAdult title{ romaji english } coverImage{ large } } } }
+                    }
+                    """
+                    variables["ids"] = chunk
+                } else {
+                    query = """
+                    query($page:Int,$from:Int,$to:Int){
+                      Page(page:$page,perPage:50){ pageInfo{ hasNextPage } airingSchedules(airingAt_greater:$from,airingAt_lesser:$to,sort:TIME){ episode airingAt media{ id type isAdult title{ romaji english } coverImage{ large } } } }
+                    }
+                    """
+                }
+                let data = try await graph(query, variables)
+                let pageObj = data["Page"] as? [String: Any]
+                let list = (pageObj?["airingSchedules"] as? [[String: Any]]) ?? []
+                for item in list {
+                    guard let media = item["media"] as? [String: Any] else { continue }
+                    if JSONValue.string(media["type"]) != nil && JSONValue.string(media["type"]) != "ANIME" { continue }
+                    if (media["isAdult"] as? Bool) == true { continue }
+                    let parsed = Media.parse(media)
+                    guard parsed.id > 0, let episode = JSONValue.int(item["episode"]) else { continue }
+                    rows.append(AiringSlot(mediaID: parsed.id, title: parsed.title, poster: parsed.cover, episode: episode, airingAt: JSONValue.int(item["airingAt"]) ?? 0))
+                }
+                let more = ((pageObj?["pageInfo"] as? [String: Any])?["hasNextPage"] as? Bool) ?? false
+                if !more { break }
+            }
+        }
+        return rows.sorted { $0.airingAt < $1.airingAt }
+    }
+
     func notes(ids: [Int]) async throws -> (aired: [[String: Any]], upcoming: [[String: Any]]) {
         let now = Int(Date().timeIntervalSince1970)
         let query = """
@@ -176,7 +233,7 @@ struct SearchFilters: Equatable {
     static let formats = [("TV", "TV"), ("MOVIE", "Movie"), ("OVA", "OVA"), ("ONA", "ONA"), ("SPECIAL", "Special"), ("TV_SHORT", "TV short")]
     static let statuses = [("RELEASING", "Airing"), ("FINISHED", "Finished"), ("NOT_YET_RELEASED", "Not yet aired"), ("HIATUS", "On hiatus")]
     static let countries = [("JP", "Japan"), ("CN", "China"), ("KR", "South Korea"), ("TW", "Taiwan")]
-    static let ratings = [("90", "★ 9+"), ("80", "★ 8+"), ("70", "★ 7+"), ("60", "★ 6+"), ("50", "★ 5+")]
+    static let ratings = [("90", "9+"), ("80", "8+"), ("70", "7+"), ("60", "6+"), ("50", "5+")]
     static let sources = [("MANGA", "Manga"), ("LIGHT_NOVEL", "Light novel"), ("WEB_NOVEL", "Web novel"), ("NOVEL", "Novel"), ("ORIGINAL", "Original"), ("VIDEO_GAME", "Video game"), ("VISUAL_NOVEL", "Visual novel")]
     static let episodeBands = [("1-12", "1–12"), ("13-26", "13–26"), ("27-60", "27–60"), ("61-", "61+")]
     static let sorts = [("TRENDING_DESC", "Trending"), ("SCORE_DESC", "Top rated"), ("START_DATE_DESC", "Newest"), ("TITLE_ROMAJI", "A–Z"), ("POPULARITY_DESC", "Popular")]

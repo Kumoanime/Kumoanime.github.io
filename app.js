@@ -306,7 +306,10 @@ function continueItems() {
   return Object.values(byShow).sort((a, b) => b.updated - a.updated).slice(0, 15);
 }
 function watchingItems() {
-  return Object.values(watchlist).sort((a, b) => (b.added || 0) - (a.added || 0));
+  return listItems("watching");
+}
+function listItems(status) {
+  return Object.values(watchlist).filter(item => KumoBrowse.listStatus(item) === status).sort((a, b) => (b.added || 0) - (a.added || 0));
 }
 
 // ---------- artwork ----------
@@ -338,7 +341,7 @@ function card(href, title, poster, sub, extra = "", opt = {}) {
     else img = `<img ${dims} src="${esc(poster)}"${set} ${opt.eager ? `fetchpriority="high"` : `loading="lazy" fetchpriority="low"`}>`;
   }
   const watchRoute = opt.watchRoute || href;
-  const on = !!watchlist[watchRoute];
+  const on = KumoBrowse.isWatching(watchlist[watchRoute]);
   const airId = opt.airId || ((/^#\/a\/(\d+)$/.exec(watchRoute) || [])[1] || "");
   const air = opt.air != null ? opt.air : (airId ? airForId(airId) : "");
   const name = title || "this show";
@@ -449,8 +452,15 @@ function refreshContinue() {
   observeLazy(root);
 }
 function refreshList() {
-  const root = viewRoot("#/list");
-  if (root) viewList(root);
+  const paint = (key, el) => {
+    if (!el) return;
+    const which = key === "#/list" ? "watching" : (key.split("/")[2] || "watching");
+    viewList(el, which);
+  };
+  if (activeKey === "#/list" || activeKey.startsWith("#/list/")) paint(activeKey, app.firstElementChild);
+  for (const [key, entry] of viewNodes) {
+    if (key === "#/list" || key.startsWith("#/list/")) paint(key, entry.el);
+  }
 }
 function saveHomeSnap(patch) {
   const prev = store.get("homeSnap", {}) || {};
@@ -699,7 +709,7 @@ const FILTERS = {
   format: ["Type", [["TV", "TV"], ["MOVIE", "Movie"], ["OVA", "OVA"], ["ONA", "ONA"], ["SPECIAL", "Special"], ["TV_SHORT", "TV short"]]],
   status: ["Status", [["RELEASING", "Airing"], ["FINISHED", "Finished"], ["NOT_YET_RELEASED", "Not yet aired"], ["HIATUS", "On hiatus"]]],
   country: ["Country", [["JP", "Japan"], ["CN", "China"], ["KR", "South Korea"], ["TW", "Taiwan"]]],
-  rating: ["Rating", [["90", "★ 9+"], ["80", "★ 8+"], ["70", "★ 7+"], ["60", "★ 6+"], ["50", "★ 5+"]]],
+  rating: ["Min score", [["90", "9+"], ["80", "8+"], ["70", "7+"], ["60", "6+"], ["50", "5+"]]],
   source: ["Source", [["MANGA", "Manga"], ["LIGHT_NOVEL", "Light novel"], ["WEB_NOVEL", "Web novel"], ["NOVEL", "Novel"], ["ORIGINAL", "Original"], ["VIDEO_GAME", "Video game"], ["VISUAL_NOVEL", "Visual novel"]]],
   episodes: ["Episodes", [["1-12", "1–12"], ["13-26", "13–26"], ["27-60", "27–60"], ["61-", "61+"]]],
   sort: ["Sort: popular", [["TRENDING_DESC", "Sort: trending"], ["SCORE_DESC", "Sort: top rated"], ["START_DATE_DESC", "Sort: newest"], ["TITLE_ROMAJI", "Sort: A–Z"]]],
@@ -721,7 +731,7 @@ function filterVars() {
   if (filters.rating) v.score = +filters.rating - 1;
   if (filters.source) v.source = filters.source;
   if (filters.episodes) { const [a, b] = filters.episodes.split("-"); v.epsMin = +a - 1; if (b) v.epsMax = +b + 1; }
-  if (filters.exclude === "watching") { const ids = Object.keys(watchlist).map(r => +(r.match(/^#\/a\/(\d+)$/) || [])[1]).filter(Boolean); if (ids.length) v.notIn = ids; }
+  if (filters.exclude === "watching") { const ids = watchingItems().map(item => +(String(item.route || "").match(/^#\/a\/(\d+)$/) || [])[1]).filter(Boolean); if (ids.length) v.notIn = ids; }
   v.sort = [filters.sort || (filters.q ? "SEARCH_MATCH" : "POPULARITY_DESC")];
   return v;
 }
@@ -839,7 +849,7 @@ function paintAnime(root, m) {
   if (root.dataset.sig === sig && root.querySelector("#playNext")) { refreshProgressMarks(root); return; }
   root.dataset.sig = sig;
   const id = m.id, route = `#/a/${id}`, title = titleOf(m);
-  const isMovie = m.format === "MOVIE", count = episodeCount(m), inList = !!watchlist[route];
+  const isMovie = m.format === "MOVIE", count = episodeCount(m), status = KumoBrowse.listStatus(watchlist[route]), inList = status === "watching";
   const studio = m.studios?.nodes?.[0]?.name;
   const next = m.nextAiringEpisode ? `Ep ${m.nextAiringEpisode.episode} airs ${new Date(m.nextAiringEpisode.airingAt * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}` : "";
   if (m.bannerImage) preloadHero(m.bannerImage);
@@ -857,13 +867,19 @@ function paintAnime(root, m) {
       ${count > 0 ? `<button class="btn" type="button" id="playNext">▶ ${isMovie ? "Play" : "Play episode " + nextEpisode(route, count)}</button>` : `<button class="btn" type="button" disabled>Not aired yet</button>`}
       ${m.trailer?.site === "youtube" ? `<button class="btn ghost" type="button" id="playTrailer">🎬 Trailer</button>` : ""}
       <button class="btn ghost" type="button" id="toggleList" data-watch="${esc(route)}">${inList ? "✓ Watching" : "+ Watching"}</button>
+      <label class="list-pick">List
+        <select id="listStatus" data-route="${esc(route)}" aria-label="List status">
+          <option value="">Not in a list</option>
+          ${KumoBrowse.STATUSES.map(row => `<option value="${row.id}"${status === row.id ? " selected" : ""}>${esc(row.label)}</option>`).join("")}
+        </select>
+      </label>
     </div>
-    ${isMovie ? "" : section("Episodes", count ? `<div class="eps" data-route="${esc(route)}" data-title="${esc(title)}" data-poster="${esc(m.coverImage?.large || "")}">${episodeCells(id, route, count)}</div><button class="btn ghost small" type="button" id="markSeason">Mark season watched</button>` : `<p class="note">No episodes have aired yet.</p>`, next)}`;
-  page.toggleList = () => {
-    toggleWatch(route, title, m.coverImage?.large);
-    const b = root.querySelector("#toggleList");
-    if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching";
-  };
+    ${isMovie ? "" : section("Episodes", count ? `<div class="eps" data-route="${esc(route)}" data-title="${esc(title)}" data-poster="${esc(m.coverImage?.large || "")}">${episodeCells(id, route, count)}</div><button class="btn ghost small" type="button" id="markSeason">Mark season watched</button>` : `<p class="note">No episodes have aired yet.</p>`, next)}
+    <div id="recs"></div>`;
+  const listPick = root.querySelector("#listStatus");
+  if (listPick) listPick.onchange = () => setListStatus(route, title, m.coverImage?.large, listPick.value);
+  page.toggleList = () => toggleWatch(route, title, m.coverImage?.large);
+  scheduleShowExtras(root, m);
   page.playNext = () => { autoStartOnce = true; goHash(`#/watch/${id}/${isMovie ? 1 : nextEpisode(route, count)}`); };
   page.playTrailer = m.trailer?.site === "youtube" ? () => play({ ytId: m.trailer.id }, { label: `${title} · Trailer`, key: `${route}:trailer` }) : null;
 }
@@ -954,7 +970,7 @@ async function viewMeta(key, type, id, root) {
   if (!m) { root.innerHTML = `<div class="empty"><h3>Couldn't load this title</h3>${esc(a.manifest.name)} didn't send its details.</div>`; return; }
   const route = metaRoute(a, type, id);
   const videos = (m.videos || []).slice().sort((x, y) => (x.season || 0) - (y.season || 0) || (x.episode || 0) - (y.episode || 0));
-  const inList = !!watchlist[route];
+  const inList = KumoBrowse.isWatching(watchlist[route]);
   if (m.background) preloadHero(m.background);
   root.innerHTML = `
     <div class="hero">${m.background ? `<div class="banner"><img src="${esc(m.background)}" alt="" fetchpriority="high" decoding="async" width="1900" height="400"></div>` : `<div class="banner"></div>`}
@@ -965,7 +981,7 @@ async function viewMeta(key, type, id, root) {
     ${videos.length ? section("Episodes", `<div class="vlist">${videos.map(v => `<button class="vrow" type="button" data-vid="${esc(v.id)}">${v.thumbnail ? `<img src="${esc(v.thumbnail)}" alt="" width="120" height="68" loading="lazy" decoding="async">` : ""}<div><b>${esc(v.title || v.name || "Episode " + v.episode)}</b><span>${[v.season != null ? "S" + v.season : "", v.episode != null ? "E" + v.episode : ""].join(" ")}</span></div></button>`).join("")}</div>`) : ""}
     <div id="streams"></div>`;
   const ctx = { route, title: m.name, poster: m.poster };
-  page.toggleList = () => { toggleWatch(route, m.name, m.poster); const b = root.querySelector("#toggleList"); if (b) b.textContent = watchlist[route] ? "✓ Watching" : "+ Watching"; };
+  page.toggleList = () => { toggleWatch(route, m.name, m.poster); const b = root.querySelector("#toggleList"); if (b) b.textContent = KumoBrowse.isWatching(watchlist[route]) ? "✓ Watching" : "+ Watching"; };
   const vLabel = v => v.title || v.name || `Episode ${v.episode}`;
   const fetchStreams = async i => {
     const vid = i < 0 ? id : videos[i].id, label = i < 0 ? m.name : vLabel(videos[i]);
@@ -995,22 +1011,226 @@ async function viewMeta(key, type, id, root) {
   page.loadVid = vid => load(videos.findIndex(x => x.id === vid));
 }
 
-function toggleWatch(route, title, poster) {
-  if (watchlist[route]) { delete watchlist[route]; removed[route] = Date.now(); store.set("removed", removed); toast("Removed from Watching"); }
-  else { watchlist[route] = { route, title, poster, added: Date.now() }; toast("Added to Watching"); }
+function saveWatchlist() {
   store.set("watchlist", watchlist);
-  paintQuick(route);
   refreshContinue();
   refreshList();
   loadNotes();
   scheduleSync();
 }
-function viewList(root) {
-  const items = watchingItems();
-  root.innerHTML =
-    section("Watching", items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "", "", { defer: false })).join("")}</div>` : `<div class="empty"><h3>You're not watching anything yet</h3>Tap <b>+ Watching</b> on any show to keep it here and get told when new episodes come out.</div>`) +
-    `<p class="note">Your shows are saved on this device.</p>`;
+function toggleWatch(route, title, poster) {
+  const current = watchlist[route];
+  if (current && KumoBrowse.isWatching(current)) {
+    delete watchlist[route];
+    removed[route] = Date.now();
+    store.set("removed", removed);
+    toast("Removed from Watching");
+  } else if (current) {
+    watchlist[route] = { ...current, route, title: title || current.title, poster: poster || current.poster, status: "watching" };
+    delete removed[route];
+    store.set("removed", removed);
+    toast("Moved to Watching");
+  } else {
+    watchlist[route] = { route, title, poster, added: Date.now(), status: "watching" };
+    delete removed[route];
+    store.set("removed", removed);
+    toast("Added to Watching");
+  }
+  saveWatchlist();
+  paintQuick(route);
+  paintListPickers();
+}
+function setListStatus(route, title, poster, status) {
+  const known = KumoBrowse.STATUSES.some(row => row.id === status);
+  if (!known) {
+    if (watchlist[route]) {
+      delete watchlist[route];
+      removed[route] = Date.now();
+      store.set("removed", removed);
+      toast("Removed from your lists");
+    }
+  } else {
+    const prev = watchlist[route];
+    watchlist[route] = {
+      route,
+      title: title || prev?.title || "",
+      poster: poster || prev?.poster || "",
+      added: prev?.added || Date.now(),
+      status,
+    };
+    delete removed[route];
+    store.set("removed", removed);
+    toast(KumoBrowse.STATUSES.find(row => row.id === status).label);
+  }
+  saveWatchlist();
+  paintQuick(route);
+  paintListPickers();
+}
+const LIST_EMPTY = {
+  watching: ["You're not watching anything yet", "Tap <b>+ Watching</b> on any show to keep it here and get told when new episodes come out."],
+  planning: ["Nothing planned yet", "Choose Plan to Watch on a show page to keep it here."],
+  completed: ["Nothing completed yet", "Choose Completed on a show page when you finish it."],
+  hold: ["Nothing on hold", "Choose On Hold on a show page to park it here."],
+  dropped: ["Nothing dropped", "Choose Dropped on a show page to keep it out of Watching."],
+};
+function viewList(root, which) {
+  const status = KumoBrowse.statusByRoute(which || "watching");
+  const items = listItems(status.id);
+  const [head, body] = LIST_EMPTY[status.id];
+  const segs = `<nav class="segs" aria-label="Lists">${KumoBrowse.STATUSES.map(row => {
+    const href = row.route ? "#/list/" + row.route : "#/list";
+    return `<a class="seg" href="${href}"${row.id === status.id ? ' aria-current="true"' : ""}>${esc(row.label)}</a>`;
+  }).join("")}</nav>`;
+  root.innerHTML = segs +
+    section(status.label, items.length ? `<div class="grid">${items.map(w => card(w.route, w.title, w.poster, "", "", { defer: false })).join("")}</div>` : `<div class="empty"><h3>${head}</h3>${body}</div>`) +
+    `<p class="note">Your shows are saved on this device. + Watching still adds to Watching only.</p>`;
   observeLazy(root);
+}
+const fillerCache = new Map();
+let fillerReadmePromise = null;
+const REC_QUERY = `query($id:Int){Media(id:$id,type:ANIME){recommendations(sort:RATING_DESC,perPage:20){nodes{mediaRecommendation{${MEDIA_FIELDS}}}}}}`;
+function scheduleShowExtras(root, m) {
+  const token = m.id + ":" + (m.idMal || "");
+  const same = root.dataset.extras === token && root.querySelector("#recs .rail");
+  root.dataset.extras = token;
+  if (!same) loadRecs(root, m);
+  loadFillerMarks(root, m.idMal);
+}
+async function loadRecs(root, m) {
+  const box = root.querySelector("#recs");
+  if (!box) return;
+  try {
+    const data = await anilist(REC_QUERY, { id: +m.id }, { key: "recs:" + m.id, ttl: TTL.media });
+    if (!box.isConnected) return;
+    const nodes = data?.Media?.recommendations?.nodes || [];
+    const items = nodes.map(node => node?.mediaRecommendation).filter(item => item && item.id);
+    if (!items.length) { box.remove(); return; }
+    const title = titleOf(m);
+    const heading = KumoBrowse.recTitle(KumoBrowse.listStatus(watchlist[`#/a/${m.id}`]), title);
+    box.innerHTML = section(heading, `<div class="rail">${items.map((item, i) => aniCard(item, i)).join("")}</div>`);
+    observeLazy(box);
+  } catch {
+    if (box.isConnected) box.remove();
+  }
+}
+async function fillerFromAnira(mal) {
+  if (!fillerReadmePromise) {
+    fillerReadmePromise = fetch("https://raw.githubusercontent.com/AniraTeam/AniFiller/main/README.md").then(r => r.ok ? r.text() : "").catch(() => "");
+  }
+  const file = KumoBrowse.fillerFile(await fillerReadmePromise, mal);
+  if (!file) return null;
+  const response = await fetch("https://cdn.jsdelivr.net/gh/AniraTeam/AniFiller@main/data/shows/" + encodeURIComponent(file));
+  if (!response.ok) return null;
+  return KumoBrowse.fillerNumbers(await response.json());
+}
+async function fetchFiller(mal) {
+  const key = String(mal || "");
+  if (!key) return {};
+  if (fillerCache.has(key)) return fillerCache.get(key);
+  let map = null;
+  try {
+    const response = await fetch("https://anifillerpedia.wiki/api/v1/series?mal_id=" + encodeURIComponent(key));
+    if (response.ok) {
+      const seriesId = KumoBrowse.seriesIdFromSearch(await response.json());
+      if (seriesId) {
+        const episodes = await fetch("https://anifillerpedia.wiki/api/v1/series/" + seriesId + "/episodes");
+        if (episodes.ok) map = KumoBrowse.fillerNumbers(await episodes.json());
+      }
+    }
+  } catch {}
+  if (!map) {
+    try { map = await fillerFromAnira(key); } catch { map = null; }
+  }
+  const ready = map || {};
+  fillerCache.set(key, ready);
+  return ready;
+}
+function applyFiller(root, map) {
+  if (!root || !map) return;
+  root.querySelectorAll(".ep[data-ep]").forEach(link => {
+    const wrap = link.closest(".ep-wrap") || link;
+    const on = !!map[link.dataset.ep];
+    wrap.classList.toggle("is-filler", on);
+    let tag = wrap.querySelector(".filler-tag");
+    if (on && !tag) {
+      tag = document.createElement("span");
+      tag.className = "filler-tag";
+      tag.textContent = "Filler";
+      wrap.appendChild(tag);
+    } else if (!on && tag) tag.remove();
+  });
+}
+async function loadFillerMarks(root, mal) {
+  if (!root || !mal) return;
+  const map = await fetchFiller(mal);
+  if (!root.isConnected) return;
+  applyFiller(root, map);
+}
+const CAL_PAGE = `query($page:Int,$from:Int,$to:Int,$ids:[Int]){
+  Page(page:$page,perPage:50){pageInfo{hasNextPage}airingSchedules(mediaId_in:$ids,airingAt_greater:$from,airingAt_lesser:$to,sort:TIME){episode airingAt media{id type isAdult title{romaji english} coverImage{large medium}}}}}`;
+const CAL_ALL = `query($page:Int,$from:Int,$to:Int){
+  Page(page:$page,perPage:50){pageInfo{hasNextPage}airingSchedules(airingAt_greater:$from,airingAt_lesser:$to,sort:TIME){episode airingAt media{id type isAdult title{romaji english} coverImage{large medium}}}}}`;
+let calAll = !!store.get("calAll", false);
+async function fetchWeek(from, to, ids) {
+  const rows = [];
+  const chunks = ids ? [] : [null];
+  if (ids) for (let i = 0; i < ids.length; i += 40) chunks.push(ids.slice(i, i + 40));
+  for (const chunk of chunks) {
+    for (let page = 1; page <= 6; page++) {
+      const vars = { page, from, to };
+      if (chunk) vars.ids = chunk;
+      const data = await anilist(chunk ? CAL_PAGE : CAL_ALL, vars, { key: "cal:" + (chunk ? chunk.join(",") : "all") + ":" + from + ":" + page, ttl: 10 * 60 * 1000 });
+      for (const row of data?.Page?.airingSchedules || []) {
+        const media = row.media;
+        if (!media || media.isAdult || (media.type && media.type !== "ANIME")) continue;
+        rows.push(row);
+      }
+      if (!data?.Page?.pageInfo?.hasNextPage) break;
+    }
+  }
+  return rows;
+}
+async function viewCalendar(root, gen) {
+  const bounds = KumoBrowse.weekBounds(Date.now());
+  const days = KumoBrowse.weekDays(Date.now());
+  root.innerHTML = `
+    <div class="cal-head">
+      <a class="more-back" href="#/" data-back aria-label="Back to Home">‹</a>
+      <h1 class="page-title">This week</h1>
+      <button class="btn ghost small" type="button" id="calToggle" aria-pressed="${calAll ? "true" : "false"}">${calAll ? "Only Watching" : "All airing anime"}</button>
+    </div>
+    <div id="calBody"><p class="muted">Loading the week…</p></div>`;
+  const toggle = root.querySelector("#calToggle");
+  if (toggle) toggle.onclick = () => {
+    calAll = !calAll;
+    store.set("calAll", calAll);
+    viewCalendar(root, gen);
+  };
+  const box = root.querySelector("#calBody");
+  const ids = watchingItems().map(item => +(String(item.route || "").match(/^#\/a\/(\d+)$/) || [])[1]).filter(Boolean);
+  if (!calAll && !ids.length) {
+    box.innerHTML = `<div class="empty"><h3>Nothing on your Watching list</h3>Add a show with + Watching, or switch to all airing anime.</div>`;
+    return;
+  }
+  try {
+    const rows = await fetchWeek(bounds.from, bounds.to, calAll ? null : ids);
+    if (root.dataset.gen !== String(gen) || !box.isConnected) return;
+    const byDay = new Map(KumoBrowse.groupSchedules(rows).map(group => [group.key, group.items]));
+    box.innerHTML = days.map(day => {
+      const items = byDay.get(day.key) || [];
+      const label = new Date(day.at * 1000).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+      const body = items.length ? items.map(row => {
+        const media = row.media || {};
+        const title = media.title?.english || media.title?.romaji || "Untitled";
+        const poster = media.coverImage?.large || media.coverImage?.medium || "";
+        const when = new Date(row.airingAt * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+        return `<a class="cal-row" href="#/a/${media.id}">${poster ? `<img src="${esc(poster)}" alt="" width="42" height="62" loading="lazy" decoding="async">` : `<span class="cal-ph"></span>`}<div><b>${esc(title)}</b><span>Episode ${esc(row.episode)} · ${esc(when)}</span></div></a>`;
+      }).join("") : `<p class="cal-empty">Nothing airing</p>`;
+      return `<section class="cal-day"><h2>${esc(label)}</h2>${body}</section>`;
+    }).join("");
+  } catch {
+    if (root.dataset.gen === String(gen) && box.isConnected) box.innerHTML = `<div class="empty"><h3>Couldn't load the calendar</h3>AniList didn't respond. Try again in a bit.</div>`;
+  }
 }
 function viewAddons(root) {
   const all = allAddons();
@@ -1137,6 +1357,7 @@ function paintWatch(root, m, ep) {
     <div id="wtSources" class="wt-sources"><p class="muted">Asking your add-ons…</p></div>
     ${air ? `<div class="wt-air">🔔 ${esc(air)}</div>` : ""}
     ${isMovie ? "" : section("Episodes", `<div class="eps" data-route="${esc(route)}" data-title="${esc(title)}" data-poster="${esc(m.coverImage?.large || "")}">${episodeCells(id, route, count, ep)}</div><button class="btn ghost small" type="button" id="markSeason">Mark season watched</button>`)}`;
+  loadFillerMarks(root, m.idMal);
   const extPlayer = root.querySelector("#extPlayer");
   const audioPref = root.querySelector("#audioPref");
   if (audioPref) {
@@ -1299,7 +1520,7 @@ function swapView(fn) {
 }
 function updateDock(key) {
   const p = key.replace(/^#\/?/, "").split("/")[0];
-  const tab = { "": "home", search: "search", list: "list", addons: "addons", more: "home" }[p] || "";
+  const tab = { "": "home", search: "search", list: "list", addons: "addons", more: "home", calendar: "home" }[p] || "";
   document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === tab ? "page" : "false"));
 }
 function snapshotPage(el) {
@@ -1330,7 +1551,8 @@ function renderRoute(key, root, gen) {
   else if (p === "search") { if (rest[0]) filters.q = decodeURIComponent(rest.join("/")); viewSearch(root, !rest[0] && !filters.q); }
   else if (p === "a") viewAnime(rest[0], root, gen);
   else if (p === "m") viewMeta(decodeURIComponent(rest[0]), decodeURIComponent(rest[1] || ""), decodeURIComponent(rest.slice(2).join("/")), root, gen);
-  else if (p === "list") viewList(root);
+  else if (p === "list") viewList(root, rest[0] || "watching");
+  else if (p === "calendar") viewCalendar(root, gen);
   else if (p === "addons") viewAddons(root);
   else viewHome(root, gen);
 }
@@ -1353,12 +1575,18 @@ function route() {
   if (parts[0] === "a" && parts[2]) { location.replace(`#/watch/${parts[1]}/${parts[2]}`); return; }
   const pop = navPop; navPop = false;
   updateDock(key);
-  if (forceRoute) { viewNodes.delete(key); viewNodes.delete("#/"); viewNodes.delete("#/list"); if (activeKey === key) activeKey = ""; forceRoute = false; }
+  if (forceRoute) {
+    for (const k of [...viewNodes.keys()]) {
+      if (k === "#/" || k === "#/list" || k.startsWith("#/list/")) viewNodes.delete(k);
+    }
+    if (activeKey === key) activeKey = "";
+    forceRoute = false;
+  }
   if (key === activeKey && app.firstElementChild?.classList?.contains("view")) {
     cancelPlayback();
     refreshProgressMarks(app.firstElementChild);
     if (key === "#/") refreshContinue();
-    if (key === "#/list") refreshList();
+    if (key === "#/list" || key.startsWith("#/list/")) refreshList();
     return;
   }
   cancelPlayback();
@@ -1393,7 +1621,7 @@ function route() {
       requestAnimationFrame(() => requestAnimationFrame(snap));
       refreshProgressMarks(root);
       if (key === "#/") refreshContinue();
-      if (key === "#/list") refreshList();
+      if (key === "#/list" || key.startsWith("#/list/")) refreshList();
       return;
     }
     window.scrollTo(0, key === "#/" && pop ? homeScroll : 0);
@@ -2149,6 +2377,7 @@ function noteContext() {
   const watchingIds = new Set();
   const addedAt = {};
   for (const [route, item] of Object.entries(watchlist)) {
+    if (!KumoBrowse.isWatching(item)) continue;
     const id = Number((route.match(/^#\/a\/(\d+)$/) || [])[1]);
     if (!id) continue;
     watchingIds.add(id);
@@ -2218,8 +2447,16 @@ function syncAirPills() {
     if (pill.textContent !== label) pill.textContent = label;
   }));
 }
+function paintListPickers() {
+  eachView(root => {
+    root.querySelectorAll("#listStatus").forEach(sel => {
+      const status = KumoBrowse.listStatus(watchlist[sel.dataset.route]);
+      if (sel.value !== status) sel.value = status;
+    });
+  });
+}
 function paintQuick(route) {
-  const on = !!watchlist[route];
+  const on = KumoBrowse.isWatching(watchlist[route]);
   eachView(root => {
     root.querySelectorAll(".quick-add").forEach(btn => {
       if (btn.dataset.quick !== route) return;
@@ -2290,7 +2527,7 @@ function renderBell() {
   const row = item => `<a class="note-row" href="#/watch/${item.mediaId}/${item.episode}">${item.poster ? `<img src="${esc(item.poster)}" alt="" width="36" height="54" loading="lazy" decoding="async">` : `<span class="note-ph" aria-hidden="true"></span>`}<div><b>${esc(item.title || "Episode " + item.episode)}</b><span>Episode ${item.episode} · ${ago(item.airingAt)}</span></div></a>`;
   const rows = noteState.items.map(row).join("");
   panel.innerHTML = `<div class="notes-head">New episodes</div>` +
-    (!Object.keys(watchlist).length ? `<p class="notes-empty">Add a show to Watching and Kumo will tell you when a new episode airs.</p>`
+    (!watchingItems().length ? `<p class="notes-empty">Add a show to Watching and Kumo will tell you when a new episode airs.</p>`
       : notesError && !rows ? `<p class="notes-empty">Couldn't check for new episodes. Try again in a bit.</p>`
       : rows || `<p class="notes-empty">No new episodes. When one airs for a show you're watching, it stays here until you watch it.</p>`);
 }

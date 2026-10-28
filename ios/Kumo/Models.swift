@@ -22,11 +22,31 @@ enum MoreList: Hashable {
     case catalog(addon: String, type: String, id: String, title: String)
 }
 
+enum ListStatus: String, CaseIterable, Identifiable {
+    case watching, planning, completed, hold, dropped
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .watching: return "Watching"
+        case .planning: return "Plan to Watch"
+        case .completed: return "Completed"
+        case .hold: return "On Hold"
+        case .dropped: return "Dropped"
+        }
+    }
+
+    static func normalize(_ raw: String?) -> ListStatus {
+        if let raw, let status = ListStatus(rawValue: raw) { return status }
+        return .watching
+    }
+}
+
 enum AppRoute: Hashable {
     case anime(Int)
     case watch(id: Int, episode: Int, auto: Bool)
     case meta(addon: String, type: String, id: String)
     case more(MoreList)
+    case calendar
 
     /// Continue-watching rows open the episode. Catalog rows open the show.
     static func watching(_ route: String, episode: Int?) -> AppRoute? {
@@ -67,6 +87,38 @@ struct WatchItem: Codable, Equatable, Identifiable {
     var title: String
     var poster: String?
     var added: Double
+    /// Missing on older saves. Those rows stay on Watching.
+    var status: String?
+
+    init(key: String, title: String, poster: String?, added: Double, status: String? = "watching") {
+        self.key = key
+        self.title = title
+        self.poster = poster
+        self.added = added
+        self.status = status
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        title = (try? container.decode(String.self, forKey: .title)) ?? ""
+        poster = try container.decodeIfPresent(String.self, forKey: .poster)
+        added = (try? container.decode(Double.self, forKey: .added)) ?? 0
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, title, poster, added, status
+    }
+}
+
+struct AiringSlot: Identifiable, Hashable {
+    var id: String { "\(mediaID)-\(episode)-\(airingAt)" }
+    var mediaID: Int
+    var title: String
+    var poster: String?
+    var episode: Int
+    var airingAt: Int
 }
 
 struct ContinueEntry: Identifiable {

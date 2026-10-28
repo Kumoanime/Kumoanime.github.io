@@ -98,22 +98,112 @@ final class AppModel: ObservableObject {
         .sorted { $0.item.updated > $1.item.updated }
     }
 
+    func listStatus(of item: WatchItem) -> ListStatus {
+        ListStatus.normalize(item.status)
+    }
+
+    func isWatching(_ key: String) -> Bool {
+        guard let item = watchlist[key] else { return false }
+        return listStatus(of: item) == .watching
+    }
+
+    func listLabel(_ key: String) -> String {
+        guard let item = watchlist[key] else { return "Not in a list" }
+        return listStatus(of: item).label
+    }
+
+    func items(status: ListStatus) -> [WatchItem] {
+        watchlist.values.filter { listStatus(of: $0) == status }.sorted { $0.added > $1.added }
+    }
+
     func watchingItems() -> [WatchItem] {
-        watchlist.values.sorted { $0.added > $1.added }
+        items(status: .watching)
+    }
+
+    func anilistIDs(status: ListStatus) -> [Int] {
+        items(status: status).compactMap { item in
+            guard item.key.hasPrefix("a/") else { return nil }
+            return Int(item.key.dropFirst(2))
+        }
     }
 
     func toggleWatch(key: String, title: String, poster: String?) {
-        if watchlist[key] != nil {
+        if let current = watchlist[key], listStatus(of: current) == .watching {
             watchlist.removeValue(forKey: key)
             removed[key] = Date().timeIntervalSince1970
             Store.set("removed", removed)
             showToast("Removed from Watching")
+        } else if var current = watchlist[key] {
+            current.status = ListStatus.watching.rawValue
+            current.title = title
+            current.poster = poster
+            watchlist[key] = current
+            removed.removeValue(forKey: key)
+            Store.set("removed", removed)
+            showToast("Moved to Watching")
         } else {
-            watchlist[key] = WatchItem(key: key, title: title, poster: poster, added: Date().timeIntervalSince1970)
+            watchlist[key] = WatchItem(key: key, title: title, poster: poster, added: Date().timeIntervalSince1970, status: ListStatus.watching.rawValue)
+            removed.removeValue(forKey: key)
+            Store.set("removed", removed)
             showToast("Added to Watching")
         }
         Store.set("watchlist", watchlist)
         Task { await loadNotes() }
+    }
+
+    func setListStatus(key: String, title: String, poster: String?, status: String?) {
+        if let status, ListStatus(rawValue: status) != nil {
+            let previous = watchlist[key]
+            watchlist[key] = WatchItem(
+                key: key,
+                title: title,
+                poster: poster ?? previous?.poster,
+                added: previous?.added ?? Date().timeIntervalSince1970,
+                status: status
+            )
+            removed.removeValue(forKey: key)
+            Store.set("removed", removed)
+            showToast(ListStatus.normalize(status).label)
+        } else if watchlist[key] != nil {
+            watchlist.removeValue(forKey: key)
+            removed[key] = Date().timeIntervalSince1970
+            Store.set("removed", removed)
+            showToast("Removed from your lists")
+        }
+        Store.set("watchlist", watchlist)
+        Task { await loadNotes() }
+    }
+
+    func recHeading(title: String, key: String) -> String {
+        let status = watchlist[key].map { listStatus(of: $0) }
+        if status == .watching || status == .completed { return "Because you watched \(title)" }
+        return "Related"
+    }
+
+    func recommendations(id: Int) async throws -> [Media] {
+        try await anilist.recommendations(id: id)
+    }
+
+    func fillerEpisodes(malID: Int?) async -> Set<Int> {
+        guard let malID else { return [] }
+        return await FillerClient.episodes(malID: malID)
+    }
+
+    func weekBounds(_ date: Date = Date()) -> (from: Int, to: Int, start: Date) {
+        let calendar = Calendar.current
+        let parts = calendar.dateComponents([.year, .month, .day, .weekday], from: date)
+        let weekday = parts.weekday ?? 1
+        let delta = (weekday + 5) % 7
+        let startDay = calendar.date(from: DateComponents(year: parts.year, month: parts.month, day: parts.day)) ?? date
+        let start = calendar.date(byAdding: .day, value: -delta, to: startDay) ?? startDay
+        let end = calendar.date(byAdding: .day, value: 7, to: start) ?? start
+        return (Int(start.timeIntervalSince1970) - 1, Int(end.timeIntervalSince1970), start)
+    }
+
+    func airingWeek(all: Bool) async throws -> [AiringSlot] {
+        let bounds = weekBounds()
+        let ids = all ? nil : anilistIDs(status: .watching)
+        return try await anilist.airingWeek(from: bounds.from, to: bounds.to, mediaIDs: ids)
     }
 
     func setPref(_ update: (inout PlayerPrefs) -> Void) {
@@ -279,10 +369,7 @@ final class AppModel: ObservableObject {
     }
 
     func search(page: Int, filters: SearchFilters) async throws -> (items: [Media], more: Bool) {
-        let hidden = watchlist.keys.compactMap { key -> Int? in
-            guard key.hasPrefix("a/") else { return nil }
-            return Int(key.dropFirst(2))
-        }
+        let hidden = anilistIDs(status: .watching)
         return try await anilist.search(page: page, filters: filters, hiddenIDs: hidden)
     }
 
@@ -459,10 +546,7 @@ final class AppModel: ObservableObject {
     }
 
     func loadNotes() async {
-        let ids = watchlist.keys.compactMap { key -> Int? in
-            guard key.hasPrefix("a/") else { return nil }
-            return Int(key.dropFirst(2))
-        }
+        let ids = anilistIDs(status: .watching)
         guard !ids.isEmpty else {
             notes = NotesState()
             unreadNotes = 0

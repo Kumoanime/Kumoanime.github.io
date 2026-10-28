@@ -15,6 +15,8 @@ struct WatchView: View {
     @State private var loading = true
     @State private var failed = false
     @State private var loadToken = 0
+    @State private var filler: Set<Int> = []
+    @State private var fillerLoaded = false
 
     var body: some View {
         ScrollView {
@@ -182,7 +184,8 @@ struct WatchView: View {
                         toggleMark: { number in
                             let on = model.fraction(route: route, episode: number) > 0.92
                             model.setEpisodeWatched(route: route, episode: number, watched: !on, title: media.title, poster: media.cover)
-                        }
+                        },
+                        filler: filler
                     ) { number in
                         Task { await reload(number: number, forceAuto: false, keepPlayer: false) }
                     }
@@ -235,6 +238,11 @@ struct WatchView: View {
             let loaded = try await model.media(id: anilistID)
             guard token == loadToken else { return }
             media = loaded
+            if !fillerLoaded {
+                fillerLoaded = true
+                let mal = loaded.idMal
+                Task { filler = await model.fillerEpisodes(malID: mal) }
+            }
             let result = await model.fetchStreams(media: loaded, episode: number)
             guard token == loadToken else { return }
             rows = result.rows
