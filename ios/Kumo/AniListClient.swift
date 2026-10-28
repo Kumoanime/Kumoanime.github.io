@@ -19,6 +19,26 @@ struct AniListClient {
         return media.compactMap { ($0 as? [String: Any]).map(Media.parse) }
     }
 
+    func browse(page: Int, sort: [String], season: String? = nil, year: Int? = nil, status: String? = nil) async throws -> (items: [Media], more: Bool) {
+        let query = """
+        query($page:Int,$sort:[MediaSort],$season:MediaSeason,$year:Int,$status:MediaStatus){
+          Page(page:$page,perPage:50){
+            pageInfo{ hasNextPage }
+            media(type:ANIME,isAdult:false,sort:$sort,season:$season,seasonYear:$year,status:$status){ \(Self.fields) }
+          }
+        }
+        """
+        var variables: [String: Any] = ["page": page, "sort": sort]
+        if let season { variables["season"] = season }
+        if let year { variables["year"] = year }
+        if let status { variables["status"] = status }
+        let data = try await graph(query, variables)
+        let pageObj = data["Page"] as? [String: Any]
+        let media = (pageObj?["media"] as? [Any]) ?? []
+        let more = ((pageObj?["pageInfo"] as? [String: Any])?["hasNextPage"] as? Bool) ?? false
+        return (media.compactMap { ($0 as? [String: Any]).map(Media.parse) }, more)
+    }
+
     func search(page: Int, filters: SearchFilters, hiddenIDs: [Int]) async throws -> (items: [Media], more: Bool) {
         let query = """
         query($page:Int,$search:String,$genre:[String],$season:MediaSeason,$year:Int,$format:[MediaFormat],$status:MediaStatus,$country:CountryCode,$score:Int,$source:MediaSource,$epsMin:Int,$epsMax:Int,$notIn:[Int],$sort:[MediaSort]){

@@ -72,17 +72,40 @@ struct PosterImage: View {
 struct SectionHead: View {
     var title: String
     var note: String?
+    var more: AppRoute? = nil
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(title).font(Theme.display(18))
-            Spacer()
+            Spacer(minLength: 8)
             if let note {
                 Text(note.uppercased())
                     .font(Theme.mono(11))
                     .foregroundStyle(Theme.muted)
             }
+            if let more {
+                NavigationLink(value: more) {
+                    Text("More")
+                        .font(Theme.mono(12))
+                        .foregroundStyle(Theme.logo)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("More \(title)")
+            }
         }
+    }
+}
+
+struct MoreTile: View {
+    var body: some View {
+        Text("More")
+            .font(Theme.display(16))
+            .foregroundStyle(Theme.logo)
+            .frame(width: 128, height: 192)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Theme.line, style: StrokeStyle(lineWidth: 1, dash: [5])))
+            .accessibilityLabel("More")
     }
 }
 
@@ -320,6 +343,8 @@ struct RouteScreen: View {
             WatchView(anilistID: id, initialEpisode: episode, forceAuto: auto)
         case .meta(let addon, let type, let id):
             MetaDetailView(addonURL: addon, type: type, metaID: id)
+        case .more(let list):
+            MoreBrowseView(list: list)
         }
     }
 }

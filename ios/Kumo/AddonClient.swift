@@ -102,8 +102,10 @@ struct AddonClient {
         return Repo(url: normalised, name: name, entries: entries)
     }
 
-    func catalog(_ addon: InstalledAddon, _ catalog: Catalog) async throws -> [MetaPreview] {
-        guard let url = AddonURLs.resource(addon.url, path: "catalog/\(catalog.type)/\(catalog.id).json") else { return [] }
+    func catalog(_ addon: InstalledAddon, _ catalog: Catalog, skip: Int = 0) async throws -> [MetaPreview] {
+        let extra = skip > 0 ? "/skip=\(skip)" : ""
+        let path = "catalog/\(catalog.type.encodePath)/\(catalog.id.encodePath)\(extra).json"
+        guard let url = AddonURLs.resource(addon.url, path: path) else { return [] }
         return try await metas(url)
     }
 
