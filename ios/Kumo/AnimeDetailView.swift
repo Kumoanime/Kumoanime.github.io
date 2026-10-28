@@ -110,7 +110,22 @@ struct AnimeDetailView: View {
             if !media.isMovie {
                 VStack(alignment: .leading, spacing: 10) {
                     SectionHead(title: "Episodes", note: airing(media))
-                    EpisodeGrid(count: media.episodeCount, current: 0, seen: { model.fraction(route: route, episode: $0) > 0.92 }, fraction: { model.fraction(route: route, episode: $0) }) { number in
+                    Button("Mark season watched") {
+                        model.markSeasonWatched(route: route, count: media.episodeCount, title: media.title, poster: media.cover)
+                    }
+                    .font(Theme.body(14, weight: .bold))
+                    .foregroundStyle(Theme.logo)
+                    EpisodeGrid(
+                        count: media.episodeCount,
+                        current: 0,
+                        seen: { model.fraction(route: route, episode: $0) > 0.92 },
+                        fraction: { model.fraction(route: route, episode: $0) },
+                        marked: { model.fraction(route: route, episode: $0) > 0.92 },
+                        toggleMark: { number in
+                            let on = model.fraction(route: route, episode: number) > 0.92
+                            model.setEpisodeWatched(route: route, episode: number, watched: !on, title: media.title, poster: media.cover)
+                        }
+                    ) { number in
                         model.pendingRoute = .watch(id: media.id, episode: number, auto: false)
                     }
                 }

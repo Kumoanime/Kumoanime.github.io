@@ -360,7 +360,8 @@ final class AppModel: ObservableObject {
             subIDs: candidates.map(\.id),
             subType: movie ? "movie" : "series",
             hasNext: !movie && episode < count,
-            nextLabel: !movie && episode < count ? "Episode \(episode + 1)" : nil
+            nextLabel: !movie && episode < count ? "Episode \(episode + 1)" : nil,
+            malID: media.idMal
         )
         return (rows, reports, context)
     }
@@ -469,11 +470,13 @@ final class AppModel: ObservableObject {
         }
         do {
             let result = try await anilist.notes(ids: ids)
-            let aired: [AiringNote] = result.aired.compactMap { item in
+            let aired: [AiringNote] = result.aired.compactMap { item -> AiringNote? in
                 guard let media = item["media"] as? [String: Any] else { return nil }
                 let parsed = Media.parse(media)
                 guard let episode = JSONValue.int(item["episode"]) else { return nil }
                 let at = JSONValue.int(item["airingAt"]) ?? 0
+                let route = route(for: parsed.id)
+                if fraction(route: route, episode: episode) > 0.92 { return nil }
                 return AiringNote(
                     id: "aired-\(parsed.id)-\(episode)",
                     mediaID: parsed.id,
@@ -496,6 +499,35 @@ final class AppModel: ObservableObject {
         } catch {
             notes.error = true
         }
+    }
+
+    func setEpisodeWatched(route: String, episode: Int, watched: Bool, title: String, poster: String?) {
+        let key = progressKey(route: route, episode: episode)
+        if watched {
+            let previous = progress[key]
+            let duration = (previous?.d ?? 0) > 1 ? previous!.d : 1000
+            saveProgress(key: key, time: duration, duration: duration, route: route, title: title, poster: poster, label: "Episode \(episode)", episode: episode)
+        } else if var item = progress[key] {
+            item.t = 0
+            item.updated = Date().timeIntervalSince1970
+            progress[key] = item
+            Store.set("progress", progress)
+        }
+        let mediaID = Int(route.dropFirst(2))
+        notes.aired.removeAll { note in
+            guard let mediaID else { return false }
+            return note.mediaID == mediaID && note.episode == episode && watched
+        }
+        unreadNotes = notes.aired.filter(\.fresh).count
+        if !watched { Task { await loadNotes() } }
+    }
+
+    func markSeasonWatched(route: String, count: Int, title: String, poster: String?) {
+        guard count > 0 else { return }
+        for number in 1...count {
+            setEpisodeWatched(route: route, episode: number, watched: true, title: title, poster: poster)
+        }
+        showToast("Season marked watched")
     }
 
     func markNotesSeen() {
