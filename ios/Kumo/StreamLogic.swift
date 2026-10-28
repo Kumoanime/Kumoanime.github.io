@@ -88,8 +88,8 @@ enum StreamLogic {
         return 40
     }
 
-    static func order(_ rows: [StreamRow]) -> [StreamRow] {
-        let audioRank: [AudioKind: Int] = [.sub: 0, .other: 1, .dub: 2]
+    static func order(_ rows: [StreamRow], prefer: AudioKind = .sub) -> [StreamRow] {
+        let audioRank: [AudioKind: Int] = prefer == .dub ? [.dub: 0, .other: 1, .sub: 2] : [.sub: 0, .other: 1, .dub: 2]
         return rows.sorted { a, b in
                 let ar = audioRank[a.audio] ?? 1
                 let br = audioRank[b.audio] ?? 1
@@ -102,8 +102,8 @@ enum StreamLogic {
 
     /// `explicit` keeps only the row the person tapped.
     /// Otherwise each index appears once. Uncached rows are left out when `skipUncached` is set.
-    static func playbackOrder(_ rows: [StreamRow], start: Int?, explicit: Bool, skipUncached: Bool) -> [StreamRow] {
-        let ranked = order(rows)
+    static func playbackOrder(_ rows: [StreamRow], start: Int?, explicit: Bool, skipUncached: Bool, prefer: AudioKind = .sub) -> [StreamRow] {
+        let ranked = order(rows, prefer: prefer)
         if explicit {
             guard let start else { return [] }
             return ranked.filter { $0.index == start }
@@ -120,20 +120,18 @@ enum StreamLogic {
 
     /// Automatic playback list: cached sources with a direct link, sub before dub.
     /// If nothing is cached, the same order including uncached links, so the first tap-free play still has a candidate.
-    static func autoCandidates(_ rows: [StreamRow]) -> [StreamRow] {
-        let cached = playbackOrder(rows, start: nil, explicit: false, skipUncached: true)
+    static func autoCandidates(_ rows: [StreamRow], prefer: AudioKind = .sub) -> [StreamRow] {
+        let cached = playbackOrder(rows, start: nil, explicit: false, skipUncached: true, prefer: prefer)
             .filter { $0.stream.url?.isEmpty == false && isCached($0.stream) }
         if !cached.isEmpty { return cached }
-        return playbackOrder(rows, start: nil, explicit: false, skipUncached: false)
+        return playbackOrder(rows, start: nil, explicit: false, skipUncached: false, prefer: prefer)
             .filter { $0.stream.url?.isEmpty == false }
     }
 
-    static func displayGroups(_ rows: [StreamRow]) -> [(AudioKind, String, [StreamRow])] {
-        let labels: [(AudioKind, String)] = [
-            (.sub, "SUB"),
-            (.dub, "DUB"),
-            (.other, rows.contains { $0.audio != .other } ? "Other" : "Sources"),
-        ]
+    static func displayGroups(_ rows: [StreamRow], prefer: AudioKind = .sub) -> [(AudioKind, String, [StreamRow])] {
+        let labels: [(AudioKind, String)] = prefer == .dub
+            ? [(.dub, "DUB"), (.sub, "SUB"), (.other, rows.contains { $0.audio != .other } ? "Other" : "Sources")]
+            : [(.sub, "SUB"), (.dub, "DUB"), (.other, rows.contains { $0.audio != .other } ? "Other" : "Sources")]
         return labels.compactMap { kind, label in
             let list = rows.filter { $0.audio == kind }.sorted { a, b in
                 let cached = (isCached(a.stream) ? 1 : 0) - (isCached(b.stream) ? 1 : 0)

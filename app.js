@@ -597,6 +597,33 @@ function viewSearch(root, focus) {
 }
 
 function mediaSig(m) { return [m.id, m.episodes || "", m.nextAiringEpisode?.episode || "", m.bannerImage || "", (m.description || "").length, m.averageScore || ""].join(":"); }
+function episodeCells(id, route, count, current) {
+  return Array.from({ length: count }, (_, i) => i + 1).map(n => {
+    const p = progress[`${route}:${n}`];
+    const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
+    const on = pct > 92;
+    return `<div class="ep-wrap"><a class="ep${on ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}" ${current === n ? 'aria-current="true"' : ""}>${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a><button type="button" class="ep-mark" data-mark="${n}" aria-pressed="${on ? "true" : "false"}" aria-label="${on ? `Mark episode ${n} unwatched` : `Mark episode ${n} watched`}">✓</button></div>`;
+  }).join("");
+}
+function episodeWatched(p) { return !!(p && p.d > 0 && p.t / p.d > 0.92); }
+function writeWatched(route, numbers, on, meta) {
+  const id = Number((String(route).match(/(\d+)$/) || [])[1]);
+  for (const n of numbers) {
+    const key = `${route}:${n}`;
+    if (on) {
+      const prev = progress[key];
+      const d = prev?.d > 1 ? prev.d : 1000;
+      saveProgress(key, { t: d, d, route, title: meta.title || "", poster: meta.poster || "", label: `Episode ${n}` });
+    } else if (progress[key]) {
+      progress[key] = { ...progress[key], t: 0, updated: Date.now() };
+      store.set("progress", progress);
+      scheduleSync();
+      if (id) persistNotes(KumoNotify.undismissEpisode(noteState, id, n, Math.floor(Date.now() / 1000)));
+    }
+  }
+  if (!on) loadNotes();
+  eachView(root => refreshProgressMarks(root));
+}
 function episodeCount(m) {
   if (m.format === "MOVIE") return m.status === "NOT_YET_RELEASED" ? 0 : 1;
   // Next episode 1 means nothing has aired. A missing count used to become
@@ -638,10 +665,7 @@ function paintAnime(root, m) {
       ${m.trailer?.site === "youtube" ? `<button class="btn ghost" type="button" id="playTrailer">🎬 Trailer</button>` : ""}
       <button class="btn ghost" type="button" id="toggleList" data-watch="${esc(route)}">${inList ? "✓ Watching" : "+ Watching"}</button>
     </div>
-    ${isMovie ? "" : section("Episodes", count ? `<div class="eps" data-route="${esc(route)}">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
-      const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
-      return `<a class="ep${pct > 92 ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}">${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
-    }).join("")}</div>` : `<p class="note">No episodes have aired yet.</p>`, next)}`;
+    ${isMovie ? "" : section("Episodes", count ? `<div class="eps" data-route="${esc(route)}" data-title="${esc(title)}" data-poster="${esc(m.coverImage?.large || "")}">${episodeCells(id, route, count)}</div><button class="btn ghost small" type="button" id="markSeason">Mark season watched</button>` : `<p class="note">No episodes have aired yet.</p>`, next)}`;
   page.toggleList = () => {
     toggleWatch(route, title, m.coverImage?.large);
     const b = root.querySelector("#toggleList");
@@ -856,7 +880,9 @@ function paintSources(root, rows, report, pending) {
   const box = root.querySelector("#wtSources");
   if (!box) return;
   page.rows = rows;
-  const groups = [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"], ["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]];
+  const groups = (prefs.audio === "dub"
+    ? [["dub", "DUB", "🎙"], ["sub", "SUB", "CC"]]
+    : [["sub", "SUB", "CC"], ["dub", "DUB", "🎙"]]).concat([["other", rows.some(r => r.audio !== "other") ? "Other" : "Sources", "▶"]]);
   const kind = st => { try { return KumoPlayback.kindLabel(st); } catch { return ""; } };
   const tagOf = disp => disp === "blocked" ? "Blocked by Real-Debrid" : disp === "uncached" ? "Not cached" : disp === "wrong-ip" ? "Different connection" : disp === "slate" ? "Unavailable" : disp === "failed" ? "Didn't play" : "";
   const showAll = !!prefs.showAllSources;
@@ -898,7 +924,13 @@ function paintWatch(root, m, ep) {
       <div class="wt-status" id="wtStatus">Finding sources…</div>
     </div>
     <div class="wt-bar">
-      <div class="wt-toggles">${toggle("autoPlay", "Auto Play")}${isMovie ? "" : toggle("autoNext", "Auto Next")}${toggle("autoSkip", "Auto Skip intro")}${toggle("showAllSources", "Show all sources")}</div>
+      <div class="wt-toggles">${toggle("autoPlay", "Auto Play")}${isMovie ? "" : toggle("autoNext", "Auto Next")}${toggle("autoSkip", "Auto Skip")}${toggle("showAllSources", "Show all sources")}</div>
+      <label class="wt-player">Audio
+        <select id="audioPref" aria-label="Prefer sub or dub">
+          <option value="sub">Sub</option>
+          <option value="dub">Dub</option>
+        </select>
+      </label>
       <label class="wt-player">Play outside in
         <select id="extPlayer" aria-label="External player">
           <option value="infuse">Infuse</option>
@@ -911,11 +943,13 @@ function paintWatch(root, m, ep) {
     <div class="wt-info">You're watching <b>${isMovie ? esc(title) : "Episode " + ep}</b>${isMovie ? "" : ` of <a href="${route}">${esc(title)}</a>`}. If a source doesn't work, try another one below.</div>
     <div id="wtSources" class="wt-sources"><p class="muted">Asking your add-ons…</p></div>
     ${air ? `<div class="wt-air">🔔 ${esc(air)}</div>` : ""}
-    ${isMovie ? "" : section("Episodes", `<div class="eps" data-route="${esc(route)}">${Array.from({ length: count }, (_, i) => i + 1).map(n => {
-      const p = progress[`${route}:${n}`]; const pct = p?.d ? Math.min(100, p.t / p.d * 100) : 0;
-      return `<a class="ep${pct > 92 ? " seen" : ""}" data-ep="${n}" href="#/watch/${id}/${n}" ${n === ep ? 'aria-current="true"' : ""}>${n}${pct ? `<span class="p" style="width:${pct}%"></span>` : ""}</a>`;
-    }).join("")}</div>`)}`;
+    ${isMovie ? "" : section("Episodes", `<div class="eps" data-route="${esc(route)}" data-title="${esc(title)}" data-poster="${esc(m.coverImage?.large || "")}">${episodeCells(id, route, count, ep)}</div><button class="btn ghost small" type="button" id="markSeason">Mark season watched</button>`)}`;
   const extPlayer = root.querySelector("#extPlayer");
+  const audioPref = root.querySelector("#audioPref");
+  if (audioPref) {
+    audioPref.value = prefs.audio === "dub" ? "dub" : "sub";
+    audioPref.onchange = () => { prefs.audio = audioPref.value === "dub" ? "dub" : "sub"; store.set("playerPrefs", prefs); refreshSources(); };
+  }
   if (extPlayer) {
     extPlayer.value = ["infuse", "vlc", "outplayer"].includes(prefs.externalPlayer) ? prefs.externalPlayer : "infuse";
     extPlayer.onchange = () => { prefs.externalPlayer = extPlayer.value; store.set("playerPrefs", prefs); };
@@ -1031,6 +1065,11 @@ function refreshProgressMarks(root) {
       let bar = el.querySelector(":scope > .p");
       if (pct) { if (!bar) { bar = document.createElement("span"); bar.className = "p"; el.appendChild(bar); } bar.style.width = pct + "%"; }
       else if (bar) bar.remove();
+    });
+    box.querySelectorAll("[data-mark]").forEach(btn => {
+      const on = episodeWatched(progress[show + ":" + btn.dataset.mark]);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.setAttribute("aria-label", on ? `Mark episode ${btn.dataset.mark} unwatched` : `Mark episode ${btn.dataset.mark} watched`);
     });
   });
 }
@@ -1174,6 +1213,27 @@ app.addEventListener("click", e => {
     e.stopPropagation();
     const routeKey = quick.dataset.quick;
     if (routeKey) toggleWatch(routeKey, quick.dataset.title || "", quick.dataset.poster || "");
+    return;
+  }
+  const mark = t.closest("[data-mark]");
+  if (mark && app.contains(mark)) {
+    e.preventDefault();
+    e.stopPropagation();
+    const box = mark.closest(".eps");
+    const show = box?.dataset.route;
+    const n = +mark.dataset.mark;
+    if (show && n) writeWatched(show, [n], mark.getAttribute("aria-pressed") !== "true", { title: box.dataset.title || "", poster: box.dataset.poster || "" });
+    return;
+  }
+  const season = t.closest("#markSeason");
+  if (season && app.contains(season)) {
+    const box = season.parentElement?.querySelector(".eps") || app.querySelector(".eps");
+    const show = box?.dataset.route;
+    const nums = [...(box?.querySelectorAll("[data-mark]") || [])].map(b => +b.dataset.mark).filter(Boolean);
+    if (show && nums.length) {
+      writeWatched(show, nums, true, { title: box.dataset.title || "", poster: box.dataset.poster || "" });
+      toast("Season marked watched");
+    }
     return;
   }
   const pref = t.closest("[data-pref]");
@@ -1608,7 +1668,7 @@ function highlightSource(index) {
 async function playFromList(rows, startIndex, info, mount, opts) {
   const gen = ++playGen;
   const explicit = !!opts?.explicit;
-  const order = KumoPlayback.playbackOrder(rows, explicit ? startIndex : null, { safari: isSafariPlayer(), explicit, skipUncached: !explicit });
+  const order = KumoPlayback.playbackOrder(rows, explicit ? startIndex : null, { safari: isSafariPlayer(), explicit, skipUncached: !explicit, audio: prefs.audio === "dub" ? "dub" : "sub" });
   const attempts = [];
   const seen = new Set();
   let lastExternal = "";
@@ -1698,6 +1758,7 @@ function play(s, info, addonKey, mount, prepared) {
       <media-video-layout></media-video-layout>
       <div class="pv-pills">
         <button class="pv-pill" id="pvIntro" hidden>Skip intro »</button>
+        <button class="pv-pill" id="pvOutro" hidden>Skip outro »</button>
         <button class="pv-pill solid" id="pvNext" hidden>${info.next ? esc(info.next.short) + " ▶" : ""}</button>
       </div>
       <div class="pv-count" id="pvCount" hidden></div>
@@ -1731,29 +1792,68 @@ function play(s, info, addonKey, mount, prepared) {
   vs.addEventListener("pause", record);
   current.record = record;
 
-  // Skip intro (85 s, a typical anime opening) and Next episode
-  let introUsed = false;
-  const skip = d => { vs.currentTime = Math.min(Math.max(0, vs.currentTime + d), (vs.duration || 1e9) - 0.5); };
+  // AniSkip intro/outro, then a cancelable countdown into the next episode.
+  let introUsed = false, outroUsed = false, nextCancelled = false, countArmed = false;
+  let skips = null;
+  const seekTo = t => { vs.currentTime = Math.min(Math.max(0, t), Math.max(0, (vs.duration || 1e9) - 0.4)); };
+  const armCountdown = () => {
+    if (countArmed || nextCancelled || !info.next || !prefs.autoNext) return;
+    if (prepared?.checkStatus && vs.duration && vs.duration < 40) return;
+    countArmed = true;
+    let n = 8;
+    const box = $("#pvCount");
+    if (!box) return;
+    const draw = () => { box.innerHTML = `<div>${esc(info.next.short)} in <b>${n}</b></div><div class="pv-count-btns"><button class="pv-pill solid" id="pvNow">Play now</button><button class="pv-pill" id="pvCancel">Cancel</button></div>`; };
+    draw();
+    box.hidden = false;
+    clearInterval(countTimer);
+    countTimer = setInterval(() => {
+      n--;
+      if (n <= 0) { clearInterval(countTimer); goNext(); }
+      else draw();
+    }, 1000);
+    box.onclick = e => {
+      if (e.target.id === "pvNow") { clearInterval(countTimer); goNext(); }
+      if (e.target.id === "pvCancel") { clearInterval(countTimer); nextCancelled = true; box.hidden = true; }
+    };
+  };
+  const loadSkips = duration => {
+    const mal = info.media?.idMal || info.mal;
+    const ep = info.ep;
+    if (!mal || !ep) { skips = {}; return; }
+    const q = new URLSearchParams();
+    q.append("types[]", "op");
+    q.append("types[]", "ed");
+    if (duration > 1) q.set("episodeLength", String(Math.round(duration)));
+    fetchTimeout(`https://api.aniskip.com/v2/skip-times/${mal}/${ep}?${q}`, 8000).then(async r => {
+      const j = r.ok ? await r.json() : null;
+      if (current?.info !== info) return;
+      skips = KumoPlayback.skipWindows(j && j.found ? j.results : []);
+    }).catch(() => { if (current?.info === info) skips = {}; });
+  };
   vs.addEventListener("time-update", () => {
     const d = vs.duration || 0, t = vs.currentTime;
-    const inIntro = !introUsed && d > 600 && t > 3 && t < 180;
-    if (inIntro && prefs.autoSkip) { introUsed = true; skip(85); }
-    $("#pvIntro").hidden = !inIntro || prefs.autoSkip;
-    $("#pvNext").hidden = !(info.next && d && d - t < 120);
+    if (skips == null && d > 1) { skips = {}; loadSkips(d); }
+    const op = skips && skips.op, ed = skips && skips.ed;
+    const inOp = KumoPlayback.inSkip(t, op);
+    const inEd = KumoPlayback.inSkip(t, ed);
+    if (inOp && prefs.autoSkip && !introUsed) { introUsed = true; seekTo(op.end); }
+    if (inEd && prefs.autoSkip && !outroUsed) { outroUsed = true; seekTo(ed.end); }
+    const introBtn = $("#pvIntro"), outroBtn = $("#pvOutro");
+    if (introBtn) introBtn.hidden = !inOp || (prefs.autoSkip && introUsed);
+    if (outroBtn) outroBtn.hidden = !inEd || (prefs.autoSkip && outroUsed);
+    const nextBtn = $("#pvNext");
+    if (nextBtn) nextBtn.hidden = !(info.next && d && d - t < 120);
+    if (info.next && prefs.autoNext && d > 30 && ((ed && t >= ed.start) || (d - t <= 12 && d - t > 0.4))) armCountdown();
   });
-  $("#pvIntro").onclick = () => { introUsed = true; skip(85); };
+  $("#pvIntro").onclick = () => { const op = skips && skips.op; if (!op) return; introUsed = true; seekTo(op.end); $("#pvIntro").hidden = true; };
+  $("#pvOutro").onclick = () => { const ed = skips && skips.ed; if (!ed) return; outroUsed = true; seekTo(ed.end); $("#pvOutro").hidden = true; };
   $("#pvNext").onclick = () => goNext();
   vs.addEventListener("ended", () => {
     record();
     if (outcome === "fail") return;
     if (prepared?.checkStatus && vs.duration && vs.duration < 40) return;
-    if (!info.next || !prefs.autoNext) return;
-    let n = 5;
-    const box = $("#pvCount");
-    const draw = () => box.innerHTML = `<div>${esc(info.next.short)} in <b>${n}</b></div><div class="pv-count-btns"><button class="pv-pill solid" id="pvNow">Play now</button><button class="pv-pill" id="pvCancel">Cancel</button></div>`;
-    draw(); box.hidden = false;
-    countTimer = setInterval(() => { n--; if (n <= 0) { clearInterval(countTimer); goNext(); } else draw(); }, 1000);
-    box.onclick = e => { if (e.target.id === "pvNow") { clearInterval(countTimer); goNext(); } if (e.target.id === "pvCancel") { clearInterval(countTimer); box.hidden = true; } };
+    armCountdown();
   });
 
   // Subtitles from the stream and from subtitle add-ons; turn on the last language picked
@@ -2044,15 +2144,24 @@ async function pushNow() {
 }
 function scheduleSync() { if (account) { clearTimeout(syncTimer); syncTimer = setTimeout(pushNow, 2000); } }
 
+function audioPrefHtml() {
+  const v = prefs.audio === "dub" ? "dub" : "sub";
+  return `<label class="acct-audio">Prefer <select id="acctAudio" aria-label="Prefer sub or dub"><option value="sub"${v === "sub" ? " selected" : ""}>Sub</option><option value="dub"${v === "dub" ? " selected" : ""}>Dub</option></select></label>`;
+}
+function bindAudioPref(panel) {
+  const sel = panel?.querySelector("#acctAudio");
+  if (!sel) return;
+  sel.onchange = () => { prefs.audio = sel.value === "dub" ? "dub" : "sub"; store.set("playerPrefs", prefs); };
+}
 function renderAccount() {
   const btn = $("#acctBtn");
   btn.innerHTML = account ? `<span class="avatar">${esc((account.email || "?")[0].toUpperCase())}</span>`
     : `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.4 0-8 2.2-8 5v1a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1c0-2.8-3.6-5-8-5Z"/></svg>`;
   btn.setAttribute("aria-label", account ? "Your account" : "Sign up or log in");
   const panel = $("#acctPanel"); if (panel.hidden) return;
-  if (!sb) { panel.innerHTML = `<div class="notes-head">Account</div><p class="notes-empty">Accounts aren't switched on yet.</p>`; return; }
+  if (!sb) { panel.innerHTML = `<div class="notes-head">Account</div>${audioPrefHtml()}<p class="notes-empty">Accounts aren't switched on yet.</p>`; bindAudioPref(panel); return; }
   if (account && recovering) {
-    panel.innerHTML = `<div class="notes-head">Set a new password</div><form class="acct-body" id="pwForm">
+    panel.innerHTML = `<div class="notes-head">Set a new password</div>${audioPrefHtml()}<form class="acct-body" id="pwForm">
       <label for="newPass">New password</label><input id="newPass" type="password" autocomplete="new-password" minlength="6" required>
       <button class="btn" type="submit">Save password</button><p class="acct-msg" id="pwMsg" role="status"></p></form>`;
     $("#pwForm").onsubmit = async e => {
@@ -2061,18 +2170,20 @@ function renderAccount() {
       if (error) { $("#pwMsg").textContent = error.message; return; }
       recovering = false; toast("Password saved"); renderAccount();
     };
+    bindAudioPref(panel);
     return;
   }
   if (account) {
-    panel.innerHTML = `<div class="notes-head">Account</div><div class="acct-body"><p class="acct-email">${esc(account.email)}</p>
+    panel.innerHTML = `<div class="notes-head">Account</div>${audioPrefHtml()}<div class="acct-body"><p class="acct-email">${esc(account.email)}</p>
       <p class="muted small">Your Watching list and progress sync to every device you log in on.${syncState ? "<br>" + esc(syncState) : ""}</p>
       <button class="btn ghost small" id="acctSync">Sync now</button> <button class="btn ghost small" id="acctOut">Log out</button></div>`;
     $("#acctSync").onclick = () => pullAndMerge();
     $("#acctOut").onclick = async () => { await pushNow(); await sb.auth.signOut(); toast("Logged out"); };
+    bindAudioPref(panel);
     return;
   }
   const mode = panel.dataset.mode || "signup";
-  panel.innerHTML = `<div class="acct-tabs"><button data-mode="signup" aria-pressed="${mode === "signup"}">Create account</button><button data-mode="login" aria-pressed="${mode === "login"}">Log in</button></div>
+  panel.innerHTML = `${audioPrefHtml()}<div class="acct-tabs"><button data-mode="signup" aria-pressed="${mode === "signup"}">Create account</button><button data-mode="login" aria-pressed="${mode === "login"}">Log in</button></div>
     <form class="acct-body" id="acctForm">
       <label for="acctEmail">Email</label><input id="acctEmail" type="email" autocomplete="email" required>
       <label for="acctPass">Password</label><input id="acctPass" type="password" autocomplete="${mode === "signup" ? "new-password" : "current-password"}" minlength="6" required>
@@ -2080,6 +2191,7 @@ function renderAccount() {
       ${mode === "login" ? `<button class="linkbtn" type="button" id="acctForgot">Forgot password?</button>` : `<p class="muted small">Syncs your Watching list and progress between devices.</p>`}
       <p class="acct-msg" id="acctMsg" role="status"></p>
     </form>`;
+  bindAudioPref(panel);
   panel.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => { panel.dataset.mode = b.dataset.mode; renderAccount(); });
   const msg = t => { $("#acctMsg").textContent = t; };
   $("#acctForm").onsubmit = async e => {

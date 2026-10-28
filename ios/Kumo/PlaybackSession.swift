@@ -79,7 +79,7 @@ final class PlaybackSession: ObservableObject {
         if let explicitIndex {
             order = StreamLogic.playbackOrder(rows, start: explicitIndex, explicit: true, skipUncached: false)
         } else {
-            order = StreamLogic.autoCandidates(rows)
+            order = StreamLogic.autoCandidates(rows, prefer: model?.prefs.audio == "dub" ? .dub : .sub)
         }
         guard let first = order.first else {
             status = rows.isEmpty ? "No sources found." : "Pick a source below."

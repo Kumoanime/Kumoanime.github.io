@@ -48,6 +48,8 @@ struct PlayerPrefs: Codable, Equatable {
     var autoSkip: Bool = false
     var speed: Double = 1
     var subLang: String = ""
+    /// "sub" or "dub". Missing on older saves means sub.
+    var audio: String? = nil
 }
 
 struct WatchItem: Codable, Equatable, Identifiable {
@@ -270,6 +272,7 @@ struct WatchContext: Equatable {
     var subType: String
     var hasNext: Bool
     var nextLabel: String?
+    var malID: Int? = nil
 }
 
 enum AddonError: LocalizedError {
@@ -302,6 +305,16 @@ enum JSONValue {
         case let n as NSNumber:
             if CFGetTypeID(n) == CFBooleanGetTypeID() { return n.boolValue ? "true" : "false" }
             return n.stringValue
+        default: return nil
+        }
+    }
+
+    static func double(_ any: Any?) -> Double? {
+        switch any {
+        case let d as Double: return d
+        case let i as Int: return Double(i)
+        case let s as String: return Double(s.trimmingCharacters(in: .whitespaces))
+        case let n as NSNumber: return n.doubleValue
         default: return nil
         }
     }
