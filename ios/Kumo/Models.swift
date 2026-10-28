@@ -14,10 +14,19 @@ enum Tab: String, CaseIterable, Identifiable, Equatable {
     }
 }
 
+enum MoreList: Hashable {
+    case continueWatching
+    case trending
+    case season
+    case favourites
+    case catalog(addon: String, type: String, id: String, title: String)
+}
+
 enum AppRoute: Hashable {
     case anime(Int)
     case watch(id: Int, episode: Int, auto: Bool)
     case meta(addon: String, type: String, id: String)
+    case more(MoreList)
 
     /// Continue-watching rows open the episode. Catalog rows open the show.
     static func watching(_ route: String, episode: Int?) -> AppRoute? {
@@ -56,6 +65,11 @@ struct WatchItem: Codable, Equatable, Identifiable {
     var title: String
     var poster: String?
     var added: Double
+}
+
+struct ContinueEntry: Identifiable {
+    var id: String
+    var item: ProgressItem
 }
 
 struct ProgressItem: Codable, Equatable {

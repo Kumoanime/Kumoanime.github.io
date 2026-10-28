@@ -13,7 +13,7 @@ struct HomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 if !model.continueItems().isEmpty {
-                    section("Continue watching") {
+                    section("Continue watching", more: .more(.continueWatching)) {
                         Rail {
                             ForEach(model.continueItems(), id: \.route) { item in
                                 if let route = AppRoute.watching(item.route, episode: item.episode) {
@@ -23,12 +23,14 @@ struct HomeView: View {
                                     .buttonStyle(.plain)
                                 }
                             }
+                            NavigationLink(value: AppRoute.more(.continueWatching)) { MoreTile() }
+                                .buttonStyle(.plain)
                         }
                     }
                 }
-                rail("Trending now", items: trending)
-                rail(seasonTitle.isEmpty ? "This season" : seasonTitle, items: season)
-                rail("All-time favourites", items: favourites)
+                rail("Trending now", items: trending, more: .more(.trending))
+                rail(seasonTitle.isEmpty ? "This season" : seasonTitle, items: season, more: .more(.season))
+                rail("All-time favourites", items: favourites, more: .more(.favourites))
                 ForEach(Array(model.catalogSources.enumerated()), id: \.offset) { _, pair in
                     CatalogRail(addon: pair.0, catalog: pair.1)
                 }
@@ -86,8 +88,8 @@ struct HomeView: View {
         .accessibilityLabel(model.unreadNotes > 0 ? "\(model.unreadNotes) new episodes" : "New episodes")
     }
 
-    @ViewBuilder private func rail(_ title: String, items: [Media]?) -> some View {
-        section(title) {
+    @ViewBuilder private func rail(_ title: String, items: [Media]?, more: AppRoute) -> some View {
+        section(title, more: more) {
             if let items {
                 Rail {
                     ForEach(items) { media in
@@ -101,6 +103,8 @@ struct HomeView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    NavigationLink(value: more) { MoreTile() }
+                        .buttonStyle(.plain)
                 }
             } else {
                 SkeletonRail()
@@ -108,9 +112,9 @@ struct HomeView: View {
         }
     }
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+    private func section<Content: View>(_ title: String, more: AppRoute? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHead(title: title)
+            SectionHead(title: title, more: more)
             content()
         }
     }
@@ -138,13 +142,17 @@ private struct CatalogRail: View {
     @State private var metas: [MetaPreview]?
     @State private var failed = false
 
+    private var moreRoute: AppRoute {
+        .more(.catalog(addon: addon.url, type: catalog.type, id: catalog.id, title: catalog.displayName))
+    }
+
     var body: some View {
         Group {
             if let metas, metas.isEmpty, !failed {
                 EmptyView()
             } else {
                 VStack(alignment: .leading, spacing: 10) {
-                    SectionHead(title: catalog.displayName, note: addon.manifest.name)
+                    SectionHead(title: catalog.displayName, note: addon.manifest.name, more: moreRoute)
                     if let metas {
                         Rail {
                             ForEach(Array(metas.prefix(30).enumerated()), id: \.offset) { _, meta in
@@ -153,6 +161,8 @@ private struct CatalogRail: View {
                                 }
                                 .buttonStyle(.plain)
                             }
+                            NavigationLink(value: moreRoute) { MoreTile() }
+                                .buttonStyle(.plain)
                         }
                     } else if failed {
                         Text("\(addon.manifest.name) didn't respond.")

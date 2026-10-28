@@ -223,6 +223,16 @@ function handles(a, name, id) {
   if (!spec) return false;
   return !spec.idPrefixes || spec.idPrefixes.some(p => id.startsWith(p));
 }
+async function fetchCatalog(a, type, id, skip) {
+  const extra = skip > 0 ? `/skip=${skip}` : "";
+  const url = addonUrl(a.url, `catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}${extra}.json`);
+  return cached("addon:catalog:" + url, TTL.catalog, async () => {
+    const r = await fetchTimeout(url, 12000);
+    if (!r.ok) throw new Error(`${a.manifest.name}: HTTP ${r.status} for catalog`);
+    const j = await r.json();
+    return j.metas ?? [];
+  }, { staleFactor: 12 });
+}
 function call(a, resource, type, id, ctx) {
   if (a.builtin) return Promise.resolve(a[resource]?.(type, id, ctx));
   const url = addonUrl(a.url, `${resource}/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`);
@@ -280,11 +290,18 @@ function continueHref(p) {
   const ep = String(p.key).slice(route.length + 1);
   return /^\d+$/.test(ep) ? `#/watch/${m[1]}/${ep}` : route;
 }
-function continueItems() {
-  const byShow = {};
+function continueRows() {
+  const rows = [];
   for (const [k, p] of Object.entries(progress)) {
     if (!p.route || (p.d && p.t / p.d > 0.92)) continue;
-    if (!byShow[p.route] || byShow[p.route].updated < p.updated) byShow[p.route] = { ...p, key: k };
+    rows.push({ ...p, key: k });
+  }
+  return rows.sort((a, b) => b.updated - a.updated);
+}
+function continueItems() {
+  const byShow = {};
+  for (const p of continueRows()) {
+    if (!byShow[p.route] || byShow[p.route].updated < p.updated) byShow[p.route] = p;
   }
   return Object.values(byShow).sort((a, b) => b.updated - a.updated).slice(0, 15);
 }
@@ -347,7 +364,29 @@ function compactMedia(m) {
   return { id: m.id, title: titleOf(m), poster: m.coverImage?.large || "", posterSm: m.coverImage?.medium || "", sub: [m.seasonYear, m.format?.replace("_", " ")].filter(Boolean).join(" · "), rating: aniRating(m) };
 }
 const skelRail = () => `<div class="rail">${Array.from({ length: 6 }, () => `<div class="card"><div class="cover skel"></div><div class="skel skel-line"></div><div class="skel skel-line" style="width:70%"></div></div>`).join("")}</div>`;
-function section(title, body, note = "") { return `<section class="section"><div class="section-head"><h2>${esc(title)}</h2>${note ? `<small>${esc(note)}</small>` : ""}</div>${body}</section>`; }
+function section(title, body, note = "", moreHref = "") {
+  const bits = [];
+  if (note) bits.push(`<small>${esc(note)}</small>`);
+  if (moreHref) bits.push(`<a class="more-link" href="${esc(moreHref)}" aria-label="More ${esc(title)}">More</a>`);
+  const side = bits.length ? `<div class="head-side">${bits.join("")}</div>` : "";
+  return `<section class="section"><div class="section-head"><h2>${esc(title)}</h2>${side}</div>${body}</section>`;
+}
+function moreTile(href, title) {
+  return `<a class="more-tile" href="${esc(href)}" aria-label="More ${esc(title)}"><span>More</span></a>`;
+}
+function b64url(s) {
+  return btoa(unescape(encodeURIComponent(s))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64urlDec(s) {
+  try {
+    let t = String(s).replace(/-/g, "+").replace(/_/g, "/");
+    while (t.length % 4) t += "=";
+    return decodeURIComponent(escape(atob(t)));
+  } catch { return ""; }
+}
+function catMoreHref(addon, catalog) {
+  return `#/more/cat/${b64url(addon.url)}/${b64url(catalog.type)}/${b64url(catalog.id)}`;
+}
 function mount() { return app.querySelector(":scope > .view") || app; }
 let hlsPromise = null, playerPromise = null, supabasePromise = null;
 function loadScript(src, asModule) {
@@ -388,11 +427,12 @@ let searchTimer = 0, searchGen = 0;
 function continueHtml() {
   const cont = continueItems();
   if (!cont.length) return "";
+  const href = "#/more/continue";
   return `<div id="sec-continue">${section("Continue watching", `<div class="rail">${cont.map((p, i) => {
     const airId = (/^#\/a\/(\d+)$/.exec(p.route || "") || [])[1] || "";
     const extra = p.d ? `<div class="bar-prog" style="width:${Math.min(100, p.t / p.d * 100)}%"></div>` : "";
     return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId, eager: i === 0, defer: i >= 4 });
-  }).join("")}</div>`)}</div>`;
+  }).join("")}${moreTile(href, "Continue watching")}</div>`, "", href)}</div>`;
 }
 function viewRoot(key) {
   if (activeKey === key && app.firstElementChild) return app.firstElementChild;
@@ -423,6 +463,7 @@ function enabledCatalogs() {
   return allAddons().filter(a => a.enabled && resourceSpec(a.manifest, "catalog"))
     .flatMap(a => (a.manifest.catalogs || []).filter(c => !(c.extra || []).some(e => e.isRequired) && !(c.extraRequired || []).length).slice(0, 3).map(c => ({ a, c, key: a.key + ":" + c.type + ":" + c.id })));
 }
+function railMoreHref(k) { return "#/more/" + k; }
 function fillRail(root, k, title, note, list) {
   const el = root.querySelector("#rail-" + k);
   if (!el || !list) return;
@@ -431,7 +472,8 @@ function fillRail(root, k, title, note, list) {
   saveHomeSnap({ rails: { [k]: list.map(compactMedia) } });
   if (el.dataset.sig === sig) return;
   el.dataset.sig = sig;
-  el.innerHTML = section(title, `<div class="rail">${list.map((m, i) => aniCard(m, i)).join("")}</div>`, note);
+  const href = railMoreHref(k);
+  el.innerHTML = section(title, `<div class="rail">${list.map((m, i) => aniCard(m, i)).join("")}${moreTile(href, title)}</div>`, note, href);
   observeLazy(el);
   if (k === "trending" && list[0]?.coverImage?.large && !continueItems().length) preloadHero(list[0].coverImage.large);
 }
@@ -442,14 +484,17 @@ function homeShell(root, snap) {
   const rails = specs.map(([k, t]) => {
     const items = snap?.rails?.[k];
     const sig = items?.length ? items.map(it => it.id).join(",") : "";
-    const body = items?.length ? `<div class="rail">${items.map((it, i) => snapCard(it, i)).join("")}</div>` : skelRail();
-    return `<div id="rail-${k}" data-sig="${sig}">${section(t, body)}</div>`;
+    const href = railMoreHref(k);
+    const body = items?.length ? `<div class="rail">${items.map((it, i) => snapCard(it, i)).join("")}${moreTile(href, t)}</div>` : skelRail();
+    return `<div id="rail-${k}" data-sig="${sig}">${section(t, body, "", href)}</div>`;
   }).join("");
   const catalogs = enabledCatalogs();
   const cats = catalogs.map((x, i) => {
     const snapCat = snap?.cats?.find(c => c.key === x.key);
-    const body = snapCat?.items?.length ? `<div class="rail">${snapCat.items.map((it, n) => snapCard(it, n)).join("")}</div>` : skelRail();
-    return `<div id="cat-${i}" data-key="${esc(x.key)}" data-sig="${snapCat?.items?.map(it => it.href).join(",") || ""}">${section(x.c.name || x.c.id, body, x.a.manifest.name)}</div>`;
+    const href = catMoreHref(x.a, x.c);
+    const name = x.c.name || x.c.id;
+    const body = snapCat?.items?.length ? `<div class="rail">${snapCat.items.map((it, n) => snapCard(it, n)).join("")}${moreTile(href, name)}</div>` : skelRail();
+    return `<div id="cat-${i}" data-key="${esc(x.key)}" data-sig="${snapCat?.items?.map(it => it.href).join(",") || ""}">${section(name, body, x.a.manifest.name, href)}</div>`;
   }).join("");
   const empty = addons.length ? "" : `<div id="home-empty">${section("Get more from Kumo", `<div class="empty"><h3>Add your first add-on</h3>Add-ons supply the episodes Kumo can play. <a href="#/addons">Open Add-ons</a> to install one by link or browse a repository.</div>`)}</div>`;
   root.innerHTML = continueHtml() + rails + cats + empty;
@@ -472,7 +517,7 @@ async function viewHome(root, gen) {
       fillRail(root, k, t, note, list);
     } catch {
       const el = root.querySelector("#rail-" + k);
-      if (el && root.dataset.gen === String(gen) && !el.dataset.sig) el.innerHTML = section(t, `<p class="note">Couldn't reach AniList for show info. Check your connection and reload.</p>`);
+      if (el && root.dataset.gen === String(gen) && !el.dataset.sig) el.innerHTML = section(t, `<p class="note">Couldn't reach AniList for show info. Check your connection and reload.</p>`, "", railMoreHref(k));
     }
   }));
   const catalogs = enabledCatalogs();
@@ -485,17 +530,165 @@ async function viewHome(root, gen) {
       if (root.dataset.gen !== String(gen)) return;
       const items = metas.slice(0, 30).map(m => ({ href: metaRoute(x.a, m.type, m.id), title: m.name, poster: m.poster || "", sub: m.releaseInfo || "", rating: m.imdbRating || "" }));
       const sig = items.map(it => it.href).join(",");
-      if (items.length) catSnap.push({ key: x.key, title: x.c.name || x.c.id, note: x.a.manifest.name, items: items.slice(0, 20) });
+      const href = catMoreHref(x.a, x.c);
+      const name = x.c.name || x.c.id;
+      if (items.length) catSnap.push({ key: x.key, title: name, note: x.a.manifest.name, items: items.slice(0, 20) });
       if (!items.length) { el.innerHTML = ""; return; }
       if (el.dataset.sig === sig) return;
       el.dataset.sig = sig;
-      el.innerHTML = section(x.c.name || x.c.id, `<div class="rail">${items.map((it, n) => snapCard(it, n)).join("")}</div>`, x.a.manifest.name);
+      el.innerHTML = section(name, `<div class="rail">${items.map((it, n) => snapCard(it, n)).join("")}${moreTile(href, name)}</div>`, x.a.manifest.name, href);
       observeLazy(el);
     } catch {
-      if (root.dataset.gen === String(gen)) el.innerHTML = section(x.c.name || x.c.id, `<p class="note">${esc(x.a.manifest.name)} didn't respond.</p>`, x.a.manifest.name);
+      if (root.dataset.gen === String(gen)) el.innerHTML = section(x.c.name || x.c.id, `<p class="note">${esc(x.a.manifest.name)} didn't respond.</p>`, x.a.manifest.name, catMoreHref(x.a, x.c));
     }
   }));
   if (catSnap.length) saveHomeSnap({ cats: catSnap });
+}
+
+const BROWSE_QUERY = `query($page:Int,$sort:[MediaSort],$season:MediaSeason,$year:Int,$status:MediaStatus){
+  Page(page:$page,perPage:50){pageInfo{hasNextPage}media(type:ANIME,isAdult:false,sort:$sort,season:$season,seasonYear:$year,status:$status){${MEDIA_FIELDS}}}}`;
+function moreShell(title) {
+  return `<div class="more-bar"><a class="more-back" href="#/" data-back="1" aria-label="Back to Home">←</a><h1>${esc(title)}</h1></div>`;
+}
+function moreSpec(kind) {
+  const s = currentSeason();
+  const seasonTitle = `${s.season[0] + s.season.slice(1).toLowerCase()} ${s.year}`;
+  return {
+    trending: { title: "Trending now", vars: { sort: ["TRENDING_DESC"], status: "RELEASING" } },
+    season: { title: seasonTitle, vars: { sort: ["POPULARITY_DESC"], season: s.season, year: s.year } },
+    top: { title: "All-time favourites", vars: { sort: ["SCORE_DESC"], status: "FINISHED" } },
+  }[kind] || null;
+}
+function metaCard(m, addon, catalogType, i) {
+  return snapCard({
+    href: metaRoute(addon, m.type || catalogType, m.id),
+    title: m.name || "Untitled",
+    poster: m.poster || "",
+    sub: m.releaseInfo || "",
+    rating: m.imdbRating || "",
+  }, i < 4 ? i : 99);
+}
+function bindMoreScroll(foot, load) {
+  const io = new IntersectionObserver(entries => {
+    if (entries.some(e => e.isIntersecting)) load();
+  }, { rootMargin: "640px" });
+  io.observe(foot);
+}
+async function viewMore(rest, root, gen) {
+  const kind = rest[0] || "";
+  if (kind === "continue") {
+    const rows = continueRows();
+    root.innerHTML = moreShell("Continue watching") + (rows.length
+      ? `<div class="grid">${rows.map((p, i) => {
+          const airId = (/^#\/a\/(\d+)$/.exec(p.route || "") || [])[1] || "";
+          const extra = p.d ? `<div class="bar-prog" style="width:${Math.min(100, p.t / p.d * 100)}%"></div>` : "";
+          return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId, eager: i < 2, defer: i >= 8 });
+        }).join("")}</div>`
+      : `<div class="empty"><h3>Nothing in progress</h3>Start an episode and it will show up here.</div>`);
+    observeLazy(root);
+    return;
+  }
+  if (kind === "cat") return viewMoreCatalog(rest, root, gen);
+  const spec = moreSpec(kind);
+  if (!spec) {
+    root.innerHTML = moreShell("More") + `<div class="empty"><h3>That list isn't here</h3><a class="more-link" href="#/" data-back="1">Back to Home</a></div>`;
+    return;
+  }
+  root.innerHTML = `${moreShell(spec.title)}<div id="moreGrid" class="grid"></div><div class="more" id="moreFoot"><p class="muted">Loading…</p></div>`;
+  const grid = root.querySelector("#moreGrid");
+  const foot = root.querySelector("#moreFoot");
+  let pageNum = 1, items = [], more = true, loading = false, hold = false, pages = 0;
+  const paint = () => {
+    grid.innerHTML = items.length
+      ? items.map((m, i) => aniCard(m, i < 4 ? i : 99)).join("")
+      : (more ? "" : `<div class="empty" style="grid-column:1/-1"><h3>Nothing here yet</h3>This list didn't return any shows.</div>`);
+    observeLazy(grid);
+    foot.hidden = !more;
+    foot.innerHTML = more ? `<button class="btn ghost" type="button" id="loadMore">Load more</button>` : "";
+    page.onMore = more ? () => load() : null;
+  };
+  const load = async () => {
+    if (loading || !more || hold || root.dataset.gen !== String(gen)) return;
+    loading = true;
+    let chain = false;
+    try {
+      const d = await anilist(BROWSE_QUERY, { ...spec.vars, page: pageNum }, { key: "more:" + kind + ":" + pageNum, ttl: TTL.list, staleFactor: 12 });
+      if (root.dataset.gen !== String(gen)) return;
+      const batch = d?.Page?.media || [];
+      rememberMediaAir(batch);
+      const seen = new Set(items.map(m => m.id));
+      const fresh = batch.filter(m => m && !seen.has(m.id));
+      items = items.concat(fresh);
+      pages++;
+      pageNum++;
+      more = !!(d?.Page?.pageInfo?.hasNextPage) && fresh.length > 0 && pages < 40;
+      paint();
+      chain = more && foot.getBoundingClientRect().top < window.innerHeight + 480;
+    } catch {
+      if (root.dataset.gen !== String(gen)) return;
+      hold = true;
+      foot.hidden = false;
+      foot.innerHTML = `<button class="btn ghost" type="button" id="loadMore">${items.length ? "Couldn't load more. Try again" : "Couldn't load this list. Try again"}</button>`;
+      page.onMore = () => { hold = false; load(); };
+    } finally { loading = false; }
+    if (chain) load();
+  };
+  page.onMore = () => load();
+  bindMoreScroll(foot, load);
+  load();
+}
+async function viewMoreCatalog(rest, root, gen) {
+  const url = b64urlDec(rest[1] || "");
+  const type = b64urlDec(rest[2] || "");
+  const id = b64urlDec(rest[3] || "");
+  const addon = allAddons().find(a => a.url === url || addonKey(a.url) === addonKey(url));
+  const catalog = addon?.manifest?.catalogs?.find(c => c.type === type && String(c.id) === id);
+  const title = catalog?.name || id || "Catalogue";
+  if (!addon || !type || !id) {
+    root.innerHTML = moreShell(title) + `<div class="empty"><h3>That add-on isn't installed</h3><a href="#/addons">Open Add-ons</a></div>`;
+    return;
+  }
+  root.innerHTML = `${moreShell(title)}<p class="note">${esc(addon.manifest.name)}</p><div id="moreGrid" class="grid"></div><div class="more" id="moreFoot"><p class="muted">Loading…</p></div>`;
+  const grid = root.querySelector("#moreGrid");
+  const foot = root.querySelector("#moreFoot");
+  let skip = 0, items = [], more = true, loading = false, hold = false, pages = 0;
+  const seen = new Set();
+  const paint = () => {
+    grid.innerHTML = items.length
+      ? items.map((m, i) => metaCard(m, addon, type, i)).join("")
+      : (more ? "" : `<div class="empty" style="grid-column:1/-1"><h3>Nothing in this catalogue</h3>${esc(addon.manifest.name)} didn't return any shows.</div>`);
+    observeLazy(grid);
+    foot.hidden = !more;
+    foot.innerHTML = more ? `<button class="btn ghost" type="button" id="loadMore">Load more</button>` : "";
+    page.onMore = more ? () => load() : null;
+  };
+  const load = async () => {
+    if (loading || !more || hold || root.dataset.gen !== String(gen)) return;
+    loading = true;
+    let chain = false;
+    try {
+      const batch = (await fetchCatalog(addon, type, id, skip)) || [];
+      if (root.dataset.gen !== String(gen)) return;
+      const fresh = batch.filter(m => m && m.id && !seen.has((m.type || type) + ":" + m.id));
+      fresh.forEach(m => seen.add((m.type || type) + ":" + m.id));
+      items = items.concat(fresh);
+      pages++;
+      skip += batch.length || 0;
+      more = fresh.length > 0 && batch.length >= 20 && pages < 30;
+      paint();
+      chain = more && foot.getBoundingClientRect().top < window.innerHeight + 480;
+    } catch {
+      if (root.dataset.gen !== String(gen)) return;
+      hold = true;
+      foot.hidden = false;
+      foot.innerHTML = `<button class="btn ghost" type="button" id="loadMore">${items.length ? "Couldn't load more. Try again" : "Couldn't load this list. Try again"}</button>`;
+      page.onMore = () => { hold = false; load(); };
+    } finally { loading = false; }
+    if (chain) load();
+  };
+  page.onMore = () => load();
+  bindMoreScroll(foot, load);
+  load();
 }
 
 const GENRES = ["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"];
@@ -1037,12 +1230,16 @@ function refreshProgressMarks(root) {
 
 // ---------- routing ----------
 const viewNodes = new Map();
-let activeKey = "", navPop = false, viewGen = 0, booted = false, forceRoute = false, navSerial = 0, vtActive = false;
+let activeKey = "", navPop = false, viewGen = 0, booted = false, forceRoute = false, navSerial = 0, vtActive = false, homeScroll = 0;
 let leaveY = 0, freezeY = false;
 window.addEventListener("scroll", () => { if (!freezeY) leaveY = window.scrollY; }, { passive: true });
 document.addEventListener("click", e => {
   const t = e.target;
-  if (t instanceof Element && t.closest("a[href^='#/']")) { leaveY = window.scrollY; freezeY = true; }
+  if (t instanceof Element && t.closest("a[href^='#/']")) {
+    leaveY = window.scrollY;
+    freezeY = true;
+    if (t.closest("a[data-back]")) navPop = true;
+  }
 }, true);
 function goHash(hash) { leaveY = window.scrollY; freezeY = true; location.hash = hash; }
 function routeKey() { const h = location.hash; return !h || h === "#" ? "#/" : h; }
@@ -1063,7 +1260,7 @@ function swapView(fn) {
 }
 function updateDock(key) {
   const p = key.replace(/^#\/?/, "").split("/")[0];
-  const tab = { "": "home", search: "search", list: "list", addons: "addons" }[p] || "";
+  const tab = { "": "home", search: "search", list: "list", addons: "addons", more: "home" }[p] || "";
   document.querySelectorAll(".dock a").forEach(a => a.setAttribute("aria-current", a.dataset.tab === tab ? "page" : "false"));
 }
 function snapshotPage(el) {
@@ -1089,6 +1286,7 @@ function renderRoute(key, root, gen) {
   const [p, ...rest] = h.split("/");
   // Don't return these promises: a view transition waits on the update callback.
   if (!p) viewHome(root, gen);
+  else if (p === "more") viewMore(rest, root, gen);
   else if (p === "watch") viewWatch(rest[0], rest[1], root, gen);
   else if (p === "search") { if (rest[0]) filters.q = decodeURIComponent(rest.join("/")); viewSearch(root, !rest[0] && !filters.q); }
   else if (p === "a") viewAnime(rest[0], root, gen);
@@ -1134,8 +1332,14 @@ function route() {
       if (el?.classList?.contains("view") && !activeKey.startsWith("#/watch")) {
         snapshotPage(el);
         viewNodes.delete(activeKey);
+        if (activeKey === "#/") homeScroll = departingY;
         viewNodes.set(activeKey, { el, y: departingY, at: Date.now() });
-        while (viewNodes.size > 8) viewNodes.delete(viewNodes.keys().next().value);
+        while (viewNodes.size > 8) {
+          let drop = null;
+          for (const k of viewNodes.keys()) if (k !== "#/") { drop = k; break; }
+          if (!drop) break;
+          viewNodes.delete(drop);
+        }
       }
       if (el) el.remove();
     }
@@ -1144,7 +1348,7 @@ function route() {
     activeKey = key;
     if (reuse?.el) {
       restorePage(reuse.el);
-      const y = pop ? (reuse.y || 0) : 0;
+      const y = pop ? (reuse.y || (key === "#/" ? homeScroll : 0)) : 0;
       const snap = () => window.scrollTo(0, y);
       snap();
       requestAnimationFrame(() => requestAnimationFrame(snap));
@@ -1153,7 +1357,7 @@ function route() {
       if (key === "#/list") refreshList();
       return;
     }
-    window.scrollTo(0, 0);
+    window.scrollTo(0, key === "#/" && pop ? homeScroll : 0);
     const gen = ++viewGen;
     root.dataset.gen = String(gen);
     renderRoute(key, root, gen);

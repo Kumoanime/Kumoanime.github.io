@@ -89,6 +89,15 @@ final class AppModel: ObservableObject {
         return byShow.values.sorted { $0.updated > $1.updated }.prefix(15).map { $0 }
     }
 
+    func continueAll() -> [ContinueEntry] {
+        progress.compactMap { key, item in
+            guard !item.route.isEmpty else { return nil }
+            if item.d > 0 && item.t / item.d > 0.92 { return nil }
+            return ContinueEntry(id: key, item: item)
+        }
+        .sorted { $0.item.updated > $1.item.updated }
+    }
+
     func watchingItems() -> [WatchItem] {
         watchlist.values.sorted { $0.added > $1.added }
     }
@@ -209,6 +218,30 @@ final class AppModel: ObservableObject {
 
     func loadCatalog(_ addon: InstalledAddon, _ catalog: Catalog) async -> [MetaPreview]? {
         try? await client.catalog(addon, catalog)
+    }
+
+    func browse(_ list: MoreList, page: Int) async throws -> (items: [Media], more: Bool) {
+        switch list {
+        case .trending:
+            return try await anilist.browse(page: page, sort: ["TRENDING_DESC"], status: "RELEASING")
+        case .season:
+            let season = currentSeason()
+            return try await anilist.browse(page: page, sort: ["POPULARITY_DESC"], season: season.season, year: season.year)
+        case .favourites:
+            return try await anilist.browse(page: page, sort: ["SCORE_DESC"], status: "FINISHED")
+        case .continueWatching, .catalog:
+            return ([], false)
+        }
+    }
+
+    func browseCatalog(addonURL: String, type: String, id: String, skip: Int) async throws -> [MetaPreview] {
+        guard let addon = addons.first(where: { $0.url == addonURL }) else {
+            throw AddonError.message("That add-on isn't installed")
+        }
+        guard let catalog = addon.manifest.catalogs.first(where: { $0.type == type && $0.id == id }) else {
+            throw AddonError.message("That catalogue isn't on this add-on")
+        }
+        return try await client.catalog(addon, catalog, skip: skip)
     }
 
     func loadMeta(addonURL: String, type: String, id: String) async -> MetaPreview? {
