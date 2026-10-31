@@ -1,5 +1,13 @@
 package app.kumo.tv
 
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.unit.Dp
+import org.json.JSONArray
+import org.json.JSONObject
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.filled.Notifications
@@ -130,12 +138,17 @@ fun TabsScreen() {
     // The newest unwatched episode of each show in Watching.
     val fresh = remember(v, HomeData.aired, watchIds) {
         HomeData.aired.filter { it.media.id in watchIds && Store.percent(it.media.route, it.episode) <= 0.92f }.distinctBy { it.media.id }
+            .filter { !Store.newsCleared(it.media.id, it.episode) }
     }
     val bell = remember { FocusRequester() }
     val firstNews = remember { FocusRequester() }
     var news by remember { mutableStateOf(false) }
     // Focus moves first, or closing the panel would leave it with nowhere to go.
     val closeNews = { runCatching { bell.requestFocus() }; news = false }
+    val context = LocalContext.current
+    val firstAccount = remember { FocusRequester() }
+    var account by remember { mutableStateOf(false) }
+    val closeAccount = { runCatching { HomeData.accountFocus.requestFocus() }; account = false }
     Box(Modifier.fillMaxSize()) {
         // The dock floats over the page, so only Left and Up leave the page,
         // always for the current tab or the account button. Right and Down stop
@@ -192,7 +205,7 @@ fun TabsScreen() {
             Modifier.align(Alignment.TopEnd).padding(top = 18.dp, end = 24.dp).size(42.dp)
                 .focusProperties { down = content; left = bell },
             focusKey = "account", requester = HomeData.accountFocus, radius = 21.dp, grow = 1.08f, outline = false,
-            background = Color(0x99202026), focusedBackground = Color.White, onClick = { Nav.push(Route.Account) },
+            background = Color(0x99202026), focusedBackground = Color.White, onClick = { account = true },
         ) { f ->
             Icon(Icons.Filled.Person, "Account", Modifier.align(Alignment.Center).size(22.dp), tint = if (f) Color.Black else Color.White)
         }
@@ -210,20 +223,38 @@ fun TabsScreen() {
                 contentAlignment = Alignment.Center,
             ) { KText(unread.toString(), 10, Color.Black, bold = true) }
         }
-        if (news) {
-            LaunchedEffect(Unit) { withFrameNanos { }; runCatching { firstNews.requestFocus() } }
-            Column(
-                Modifier.align(Alignment.TopEnd).padding(top = 68.dp, end = 24.dp).width(330.dp)
-                    .focusProperties {
-                        exit = { d ->
-                            if (d == FocusDirection.Left || d == FocusDirection.Right || d == FocusDirection.Up || d == FocusDirection.Down) FocusRequester.Cancel
-                            else FocusRequester.Default
+        if (account) TopPanel(firstAccount, 300.dp) {
+            val email = Store.accountEmail
+            KText("Account", 14, Muted, bold = true, modifier = Modifier.padding(start = 8.dp, top = 4.dp))
+            Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (email != null) {
+                    KText(email, 15, bold = true, lines = 1)
+                    KText("Watching and progress sync with your phone. ${Store.syncState}", 12, Muted)
+                } else PhoneQr(PairMode.LOGIN, 190.dp, "Scan to log in from your phone. It needs to be on the same WiFi as this TV.")
+            }
+            // The first button stays in place so logging in doesn't lose focus.
+            Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KButton(if (email != null) "Sync now" else "Log in with the remote", focusKey = "acct:first", requester = firstAccount) {
+                    if (email != null) scope.launch { Store.sync() }
+                    else askText(context, "Email") { e ->
+                        if (e.isEmpty()) return@askText
+                        askText(context, "Password", password = true) { p ->
+                            scope.launch { runCatching { Store.login(e, p) }.onFailure { Toast.makeText(context, it.message ?: "Couldn't log in", Toast.LENGTH_LONG).show() } }
                         }
-                    }.focusGroup()
-                    .background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                KText("New episodes", 14, Muted, bold = true, modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 2.dp))
+                    }
+                }
+                if (email != null) KButton("Log out") { closeAccount(); Store.logout() }
+            }
+        }
+        if (news) TopPanel(firstNews, 330.dp) {
+                Row(Modifier.fillMaxWidth().padding(start = 8.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    KText("New episodes", 14, Muted, bold = true, modifier = Modifier.weight(1f))
+                    if (fresh.isNotEmpty()) KButton("Clear", focusKey = "news:clear") {
+                        val all = fresh.map { it.media.id to it.episode }
+                        closeNews()
+                        Store.clearNews(all)
+                    }
+                }
                 if (fresh.isEmpty()) Tile(Modifier.fillMaxWidth(), focusKey = "news:none", requester = firstNews, radius = 12.dp, grow = 1f, background = Surface, onClick = { closeNews() }) {
                     KText("You're all caught up", 13, modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp))
                 }
@@ -249,7 +280,6 @@ fun TabsScreen() {
                         }
                     }
                 }
-            }
         }
     }
     // The dock is hidden, so Back brings it up. Back again goes Home, then exits.
@@ -258,6 +288,25 @@ fun TabsScreen() {
         else { HomeData.tab = 0; runCatching { dock[0].requestFocus() } }
     }
     BackHandler(news) { closeNews() }
+    BackHandler(account) { closeAccount() }
+}
+
+/** The small panel under the bell and account buttons. Arrow keys stay inside it. */
+@Composable
+private fun BoxScope.TopPanel(first: FocusRequester, width: Dp, content: @Composable ColumnScope.() -> Unit) {
+    LaunchedEffect(Unit) { withFrameNanos { }; runCatching { first.requestFocus() } }
+    Column(
+        Modifier.align(Alignment.TopEnd).padding(top = 68.dp, end = 24.dp).width(width)
+            .focusProperties {
+                exit = { d ->
+                    if (d == FocusDirection.Left || d == FocusDirection.Right || d == FocusDirection.Up || d == FocusDirection.Down) FocusRequester.Cancel
+                    else FocusRequester.Default
+                }
+            }.focusGroup()
+            .background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        content = content,
+    )
 }
 
 /** Lazy grids swallow Left on their first column, so it points at the dock here. */
@@ -351,25 +400,129 @@ object SearchData {
     var busy by mutableStateOf(false)
 }
 
+private class Filter(val key: String, val name: String, val options: List<Pair<String, String>>)
+
+private val Filters = run {
+    val now = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+    listOf(
+        Filter("genre", "Genre", listOf("Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller").map { it to it }),
+        Filter("season", "Season", listOf("WINTER" to "Winter", "SPRING" to "Spring", "SUMMER" to "Summer", "FALL" to "Fall")),
+        Filter("year", "Year", (now + 1 downTo 1970).map { "$it" to "$it" }),
+        Filter("format", "Type", listOf("TV" to "TV", "MOVIE" to "Movie", "OVA" to "OVA", "ONA" to "ONA", "SPECIAL" to "Special", "TV_SHORT" to "TV short")),
+        Filter("status", "Status", listOf("RELEASING" to "Airing", "FINISHED" to "Finished", "NOT_YET_RELEASED" to "Not yet aired", "HIATUS" to "On hiatus")),
+        Filter("country", "Country", listOf("JP" to "Japan", "CN" to "China", "KR" to "South Korea", "TW" to "Taiwan")),
+        Filter("rating", "Rating", listOf("90" to "★ 9+", "80" to "★ 8+", "70" to "★ 7+", "60" to "★ 6+", "50" to "★ 5+")),
+        Filter("source", "Source", listOf("MANGA" to "Manga", "LIGHT_NOVEL" to "Light novel", "WEB_NOVEL" to "Web novel", "NOVEL" to "Novel", "ORIGINAL" to "Original", "VIDEO_GAME" to "Video game", "VISUAL_NOVEL" to "Visual novel")),
+        Filter("episodes", "Episodes", listOf("1-12" to "1–12", "13-26" to "13–26", "27-60" to "27–60", "61-" to "61+")),
+        Filter("sort", "Sort: popular", listOf("TRENDING_DESC" to "Sort: trending", "SCORE_DESC" to "Sort: top rated", "START_DATE_DESC" to "Sort: newest", "TITLE_ROMAJI" to "Sort: A–Z")),
+        Filter("exclude", "Show everything", listOf("watching" to "Hide my Watching")),
+    )
+}
+
+object SearchData {
+    var query by mutableStateOf("")
+    var results by mutableStateOf<List<Media>>(emptyList())
+    var busy by mutableStateOf(false)
+    var failed by mutableStateOf(false)
+    var more = false
+    val filters = androidx.compose.runtime.mutableStateMapOf<String, String>()
+    private var page = 1
+    private var run = 0
+    private var fetching = false
+
+    private fun vars(): JSONObject {
+        val v = JSONObject().put("page", page)
+        val f = filters
+        if (query.isNotEmpty()) v.put("search", query)
+        f["genre"]?.let { v.put("genre", JSONArray().put(it)) }
+        f["season"]?.let { v.put("season", it) }
+        f["year"]?.let { v.put("year", it.toInt()) }
+        f["format"]?.let { v.put("format", JSONArray().put(it)) }
+        f["status"]?.let { v.put("status", it) }
+        f["country"]?.let { v.put("country", it) }
+        f["rating"]?.let { v.put("score", it.toInt() - 1) }
+        f["source"]?.let { v.put("source", it) }
+        f["episodes"]?.let {
+            v.put("epsMin", it.substringBefore("-").toInt() - 1)
+            it.substringAfter("-").toIntOrNull()?.let { top -> v.put("epsMax", top + 1) }
+        }
+        if (f["exclude"] == "watching") {
+            val ids = Store.watchingItems().mapNotNull { routeId(it.optString("route")) }
+            if (ids.isNotEmpty()) v.put("notIn", JSONArray(ids))
+        }
+        v.put("sort", JSONArray().put(f["sort"] ?: if (query.isNotEmpty()) "SEARCH_MATCH" else "POPULARITY_DESC"))
+        return v
+    }
+
+    suspend fun fresh() {
+        page = 1
+        val mine = ++run
+        busy = true
+        failed = false
+        val found = runCatching { AniList.search(vars()) }.getOrNull()
+        if (mine != run) return
+        busy = false
+        failed = found == null
+        results = found?.first.orEmpty()
+        more = found?.second ?: false
+    }
+
+    suspend fun next() {
+        if (!more || busy || fetching) return
+        fetching = true
+        val mine = run
+        page++
+        val found = runCatching { AniList.search(vars()) }.getOrNull()
+        fetching = false
+        if (mine != run) return
+        if (found == null) { page--; return }
+        results = (results + found.first).distinctBy { it.id }
+        more = found.second
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SearchScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    Column(Modifier.fillMaxSize().padding(start = 40.dp, end = 80.dp, top = 28.dp)) {
-        KButton(if (SearchData.query.isEmpty()) "Type a title to search" else "Searching: ${SearchData.query}", focusKey = "search:box") {
-            askText(context, "Search anime", SearchData.query) { q ->
-                if (q.isEmpty()) return@askText
-                SearchData.query = q; SearchData.busy = true
-                scope.launch {
-                    SearchData.results = runCatching { AniList.list("SEARCH_MATCH", search = q) }.getOrDefault(emptyList())
-                    SearchData.busy = false
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(Unit) { if (SearchData.results.isEmpty()) SearchData.fresh() }
+    LaunchedEffect(gridState) {
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last ->
+            if (last >= SearchData.results.size - 6) SearchData.next()
+        }
+    }
+    Column(Modifier.fillMaxSize().padding(start = 40.dp, end = 40.dp, top = 22.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            KButton(if (SearchData.query.isEmpty()) "Type a title to search" else "Searching: ${SearchData.query}", focusKey = "search:box") {
+                askText(context, "Search anime", SearchData.query) { q ->
+                    SearchData.query = q
+                    scope.launch { SearchData.fresh() }
+                }
+            }
+            val active = SearchData.filters.size
+            if (active > 0) KButton(if (active == 1) "Clear 1 filter" else "Clear $active filters") {
+                Nav.restore = "search:box"
+                SearchData.filters.clear()
+                scope.launch { SearchData.fresh() }
+            }
+        }
+        FlowRow(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Filters.forEach { f ->
+                val set = SearchData.filters[f.key]
+                KButton(f.options.firstOrNull { it.first == set }?.second ?: f.name, focusKey = "filter:${f.key}", solid = set != null) {
+                    pick(context, f.name, listOf(f.name) + f.options.map { it.second }) { i ->
+                        if (i == 0) SearchData.filters.remove(f.key) else SearchData.filters[f.key] = f.options[i - 1].first
+                        scope.launch { SearchData.fresh() }
+                    }
                 }
             }
         }
-        if (SearchData.busy) KText("Searching…", 14, Muted, modifier = Modifier.padding(top = 16.dp))
-        else if (SearchData.query.isNotEmpty() && SearchData.results.isEmpty()) KText("Nothing found.", 14, Muted, modifier = Modifier.padding(top = 16.dp))
-        val gridState = rememberLazyGridState()
-        LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), Modifier.padding(top = 14.dp), state = gridState, contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (SearchData.busy) KText("Searching…", 14, Muted, modifier = Modifier.padding(top = 14.dp))
+        else if (SearchData.failed) KText("Couldn't reach AniList. Check the connection.", 14, Muted, modifier = Modifier.padding(top = 14.dp))
+        else if (SearchData.results.isEmpty()) KText("Nothing matches. Try fewer filters.", 14, Muted, modifier = Modifier.padding(top = 14.dp))
+        LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), Modifier.padding(top = 10.dp), state = gridState, contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             itemsIndexed(SearchData.results, key = { _, m -> m.id }) { i, m -> Poster(m.poster("search:${m.id}"), leftEdge(gridState, i)) }
         }
     }
@@ -397,7 +550,8 @@ fun AddonsScreen() {
     val v = Store.addonVersion
     val list = remember(v) { Store.addons.toList() }
     LaunchedEffect(Unit) { if (Nav.restore == null) Nav.restore = "addons:add" }
-    LazyColumn(contentPadding = PaddingValues(40.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Row(Modifier.fillMaxSize()) {
+    LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(40.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { KText("Add-ons", 26, bold = true, modifier = Modifier.padding(bottom = 6.dp)) }
         item {
             KButton("Add an add-on link", focusKey = "addons:add", solid = true) {
@@ -430,6 +584,11 @@ fun AddonsScreen() {
             }
         }
     }
+    Column(Modifier.width(290.dp).padding(top = 40.dp, end = 40.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        KText("Add from your phone", 16, bold = true)
+        PhoneQr(PairMode.ADDONS, 220.dp, "Scan, then paste your add-on links. Your phone needs to be on the same WiFi as this TV.")
+    }
+    }
 }
 
 @Composable
@@ -447,38 +606,6 @@ fun SettingsScreen() {
         KText("Add-ons and devices", 15, Muted, bold = true, modifier = Modifier.padding(top = 18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             KButton(if (addonCount == 1) "Add-ons  ·  1 installed" else "Add-ons  ·  $addonCount installed", focusKey = "set:addons") { Nav.push(Route.Addons) }
-            KButton("Phone setup", focusKey = "set:phone") { Nav.push(Route.PhoneSetup) }
-        }
-    }
-}
-
-@Composable
-fun AccountScreen() {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val email = Store.accountEmail
-    LaunchedEffect(email) { if (Nav.restore == null) Nav.restore = if (email != null) "acct:sync" else "acct:login" }
-    Column(Modifier.fillMaxSize().padding(40.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        KText("Account", 26, bold = true)
-        if (email != null) {
-            KText(email, 18, bold = true)
-            KText("Watching and progress sync with your phone. ${Store.syncState}", 14, Muted)
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                KButton("Sync now", focusKey = "acct:sync") { scope.launch { Store.sync() } }
-                KButton("Log out") { Store.logout() }
-            }
-        } else {
-            KText("Log in with your Kumo account to sync with your phone.", 15, Muted)
-            KButton("Log in", focusKey = "acct:login", solid = true) {
-                askText(context, "Email") { e ->
-                    if (e.isEmpty()) return@askText
-                    askText(context, "Password", password = true) { p ->
-                        scope.launch {
-                            runCatching { Store.login(e, p) }.onFailure { Toast.makeText(context, it.message ?: "Couldn't log in", Toast.LENGTH_LONG).show() }
-                        }
-                    }
-                }
-            }
         }
     }
 }

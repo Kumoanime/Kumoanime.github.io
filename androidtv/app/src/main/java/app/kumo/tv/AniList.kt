@@ -26,6 +26,17 @@ object AniList {
         return items.onEach { m -> if (!cache.containsKey(m.id)) cache[m.id] = m }
     }
 
+    private const val SEARCH = "query(\$page:Int,\$search:String,\$genre:[String],\$season:MediaSeason,\$year:Int,\$format:[MediaFormat],\$status:MediaStatus,\$country:CountryCode,\$score:Int,\$source:MediaSource,\$epsMin:Int,\$epsMax:Int,\$notIn:[Int],\$sort:[MediaSort])" +
+        "{Page(page:\$page,perPage:30){pageInfo{hasNextPage}media(type:ANIME,isAdult:false,search:\$search,genre_in:\$genre,season:\$season,seasonYear:\$year,format_in:\$format,status:\$status,countryOfOrigin:\$country,averageScore_greater:\$score,source:\$source,episodes_greater:\$epsMin,episodes_lesser:\$epsMax,id_not_in:\$notIn,sort:\$sort){$FIELDS}}}"
+
+    /** One page of filtered results, and whether another page follows. */
+    suspend fun search(vars: JSONObject): Pair<List<Media>, Boolean> {
+        val page = graph(SEARCH, vars).optJSONObject("Page") ?: throw Exception("AniList didn't answer")
+        val items = page.optJSONArray("media").objects().map(Media::parse)
+        items.forEach { m -> if (!cache.containsKey(m.id)) cache[m.id] = m }
+        return items to (page.optJSONObject("pageInfo")?.optBoolean("hasNextPage") ?: false)
+    }
+
     suspend fun media(id: Int): Media {
         cache[id]?.takeIf { it.synopsis != null }?.let { return it }
         val q = "query(\$id:Int){Media(id:\$id,type:ANIME){$FIELDS}}"

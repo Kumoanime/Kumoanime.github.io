@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
@@ -38,6 +39,8 @@ import java.net.Socket
 import java.net.URLDecoder
 import java.security.SecureRandom
 
+enum class PairMode { LOGIN, ADDONS }
+
 private fun html(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
 /**
@@ -45,7 +48,7 @@ private fun html(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").repla
  * never pass through another service. It runs only while its screen is open,
  * and every request has to carry the code from the QR link.
  */
-class PairServer(private val token: String, private val report: (String) -> Unit) {
+class PairServer(private val token: String, private val mode: PairMode, private val report: (String) -> Unit) {
     private var socket: ServerSocket? = null
     private var badTries = 0
     @Volatile private var running = false
@@ -103,11 +106,11 @@ class PairServer(private val token: String, private val report: (String) -> Unit
         val notes = ArrayList<String>()
         val email = form["email"]?.trim().orEmpty()
         val password = form["password"].orEmpty()
-        if (email.isNotEmpty() && password.isNotEmpty()) {
+        if (mode == PairMode.LOGIN && email.isNotEmpty() && password.isNotEmpty()) {
             val result = runCatching { withContext(Dispatchers.Main) { Store.login(email, password) } }
             notes.add(result.fold({ "Logged in as $email." }, { "Login failed: ${it.message}" }))
         }
-        form["addons"].orEmpty().lines().map { it.trim() }.filter { it.isNotEmpty() }.forEach { line ->
+        if (mode == PairMode.ADDONS) form["addons"].orEmpty().lines().map { it.trim() }.filter { it.isNotEmpty() }.forEach { line ->
             val result = runCatching {
                 val a = Addons.install(line)
                 withContext(Dispatchers.Main) { Store.addons.removeAll { it.url == a.url }; Store.addons.add(a); Store.saveAddons() }
@@ -132,12 +135,14 @@ class PairServer(private val token: String, private val report: (String) -> Unit
         c.getOutputStream().apply { write(head.toByteArray()); write(bytes); flush() }
     }
 
+    private fun fields() = if (mode == PairMode.LOGIN) """<h2>Kumo account</h2><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none"></label>
+<label>Password<input name="password" type="password" autocomplete="current-password"></label>"""
+    else """<h2>Add-ons</h2><label>Paste add-on links, one per line<textarea name="addons" rows="4" autocapitalize="none" autocorrect="off" spellcheck="false"></textarea></label>"""
+
     private fun page(note: String, k: String): String {
         val form = if (k.isEmpty()) "" else """
 <form method="post" action="/"><input type="hidden" name="k" value="$k">
-<h2>Kumo account</h2><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none"></label>
-<label>Password<input name="password" type="password" autocomplete="current-password"></label>
-<h2>Add-ons</h2><label>Paste add-on links, one per line<textarea name="addons" rows="4" autocapitalize="none" autocorrect="off" spellcheck="false"></textarea></label>
+${fields()}
 <button>Send to TV</button></form>"""
         return """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kumo TV setup</title>
 <style>body{margin:0;padding:20px;background:#000;color:#fff;font:17px -apple-system,system-ui,sans-serif}h1{color:#ff8a1f;margin:0 0 4px}h2{font-size:18px;margin:24px 0 8px}
@@ -173,33 +178,26 @@ private fun qrBitmap(text: String): Bitmap {
     return b
 }
 
+/** A QR code for one job. The phone page it links to runs only while this is on screen. */
 @Composable
-fun PhoneSetupScreen() {
+fun PhoneQr(mode: PairMode, size: Dp, hint: String) {
     val token = remember { PairServer.newToken() }
     val ip = remember { PairServer.address() }
     val notes = remember { mutableStateListOf<String>() }
     var started by remember { mutableStateOf(true) }
     DisposableEffect(token) {
-        val server = PairServer(token) { line -> android.os.Handler(android.os.Looper.getMainLooper()).post { notes.add(0, line) } }
+        val server = PairServer(token, mode) { line -> android.os.Handler(android.os.Looper.getMainLooper()).post { notes.add(0, line) } }
         started = server.start()
         onDispose { server.stop() }
     }
-    if (ip == null || !started) { Centered("Couldn't start phone setup. Check that the TV is on your network."); return }
+    if (ip == null || !started) { KText("The QR code needs this TV on your network.", 13, Muted); return }
     val url = "http://$ip:${PairServer.PORT}/?k=$token"
     val qr = remember(url) { qrBitmap(url).asImageBitmap() }
-    Row(Modifier.fillMaxSize().padding(32.dp), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-        Box(Modifier.size(300.dp).background(Color.White).focusable()) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.size(size).background(Color.White)) {
             Image(qr, "QR code", Modifier.fillMaxSize(), contentScale = ContentScale.Fit, filterQuality = FilterQuality.None)
         }
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            KText("Set up from your phone", 24, bold = true)
-            KText("1. Connect your phone to the same WiFi as this TV.", 16)
-            KText("2. Point your camera at the code and open the link.", 16)
-            KText("3. Enter your login and add-on links, then tap Send to TV.", 16)
-            KText("Or open this address on your phone:", 14, Muted, modifier = Modifier.padding(top = 10.dp))
-            KText(url, 16, Orange)
-            KText("Your details go directly from your phone to this TV. The page stops when you leave this screen.", 13, Muted, modifier = Modifier.padding(top = 10.dp))
-            notes.take(6).forEach { KText(it, 16, Orange, bold = true) }
-        }
+        KText(hint, 12, Muted)
+        notes.take(3).forEach { KText(it, 12, Orange, bold = true) }
     }
 }

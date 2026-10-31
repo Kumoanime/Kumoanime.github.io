@@ -80,6 +80,13 @@ object Store {
         version++
     }
 
+    private val clearedNews get() = sp.getStringSet("clearedNews", emptySet()) ?: emptySet()
+    fun newsCleared(id: Int, ep: Int) = "$id:$ep" in clearedNews
+    fun clearNews(items: List<Pair<Int, Int>>) {
+        sp.edit().putStringSet("clearedNews", clearedNews + items.map { (id, ep) -> "$id:$ep" }).apply()
+        version++
+    }
+
     // ---- watching ----
     fun inWatchlist(route: String) = watchlist.has(route)
     fun toggleWatch(route: String, title: String, poster: String?) {

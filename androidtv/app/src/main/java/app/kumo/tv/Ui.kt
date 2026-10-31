@@ -144,8 +144,8 @@ fun KText(text: String, size: Int = 15, color: Color = Color.White, bold: Boolea
 }
 
 @Composable
-fun KButton(label: String, modifier: Modifier = Modifier, focusKey: String? = null, solid: Boolean = false, onClick: () -> Unit) {
-    Tile(modifier, focusKey = focusKey, radius = 22.dp, grow = 1.05f, outline = false, background = if (solid) Orange else Raise, focusedBackground = Color.White, onClick = onClick) { f ->
+fun KButton(label: String, modifier: Modifier = Modifier, focusKey: String? = null, solid: Boolean = false, requester: FocusRequester? = null, onClick: () -> Unit) {
+    Tile(modifier, focusKey = focusKey, requester = requester, radius = 22.dp, grow = 1.05f, outline = false, background = if (solid) Orange else Raise, focusedBackground = Color.White, onClick = onClick) { f ->
         KText(label, 14, if (f || solid) Color.Black else Color.White, bold = true, modifier = Modifier.padding(horizontal = 20.dp, vertical = 9.dp))
     }
 }
