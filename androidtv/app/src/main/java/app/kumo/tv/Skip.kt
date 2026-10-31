@@ -65,8 +65,9 @@ object SkipSources {
 
     private fun near(a: Window, b: Window) = abs(a.start - b.start) < AGREE_SECONDS && abs(a.endInclusive - b.endInclusive) < AGREE_SECONDS
 
-    /** The window most sources agree on. On a tie the earliest source wins, and AniSkip is first. */
-    private fun agreed(list: List<Window>): Window? = list.maxByOrNull { a -> list.count { near(a, it) } }
+    /** The window most sources agree on. On a tie, the one closest to a normal 90 second song. */
+    private fun agreed(list: List<Window>): Window? =
+        list.sortedBy { abs(it.endInclusive - it.start - 90) }.maxByOrNull { a -> list.count { near(a, it) } }
 
     private suspend fun episode(ids: ShowIds, ep: Int, duration: Double): SkipTimes = coroutineScope {
         fun guarded(block: suspend () -> SkipTimes?) = async { withTimeoutOrNull(8000) { runCatching { block() }.getOrNull() } }

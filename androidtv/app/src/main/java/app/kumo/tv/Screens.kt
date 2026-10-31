@@ -1,5 +1,6 @@
 package app.kumo.tv
 
+import coil.request.ImageRequest
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -661,7 +662,10 @@ private fun Backdrop(m: Media) = Backdrop(m.banner ?: m.cover, 0.55f)
 @Composable
 private fun Backdrop(image: String?, strength: Float) {
     if (image == null) return
-    AsyncImage(image, null, Modifier.fillMaxSize().alpha(strength), contentScale = ContentScale.Crop)
+    val context = LocalContext.current
+    // Half size and painted with alpha directly: a full screen layer is what slows this TV down.
+    val request = remember(image) { ImageRequest.Builder(context).data(image).size(960, 540).build() }
+    AsyncImage(request, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = strength)
     Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color.Black, 0.7f to Color(0x66000000), 1f to Color.Transparent)))
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.25f to Color.Transparent, 0.85f to Color.Black)))
 }
