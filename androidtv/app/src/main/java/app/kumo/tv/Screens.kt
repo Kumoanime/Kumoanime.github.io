@@ -420,6 +420,7 @@ object SearchData {
     var busy by mutableStateOf(false)
     var failed by mutableStateOf(false)
     var more = false
+    var searches by androidx.compose.runtime.mutableIntStateOf(0)
     val filters = androidx.compose.runtime.mutableStateMapOf<String, String>()
     private var page = 1
     private var run = 0
@@ -460,6 +461,7 @@ object SearchData {
         failed = found == null
         results = found?.first.orEmpty()
         more = found?.second ?: false
+        searches++
     }
 
     suspend fun next() {
@@ -483,6 +485,8 @@ fun SearchScreen() {
     val scope = rememberCoroutineScope()
     val gridState = rememberLazyGridState()
     LaunchedEffect(Unit) { if (SearchData.results.isEmpty()) SearchData.fresh() }
+    // New results keep the old scroll position when a show is in both, so start at the top.
+    LaunchedEffect(SearchData.searches) { gridState.scrollToItem(0) }
     LaunchedEffect(gridState) {
         snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last ->
             if (last >= SearchData.results.size - 6) SearchData.next()
