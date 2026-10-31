@@ -66,6 +66,9 @@ h1,h2,h3{font-weight:400;margin:0}
 .quick-add span{width:26px;height:26px;border-radius:50%;background:rgb(0 0 0/.82);color:var(--logo);border:1px solid var(--logo);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;line-height:1;box-shadow:0 2px 8px rgb(0 0 0/.45);user-select:none}
 .quick-add.on span{background:var(--logo);color:#000}
 .quick-add:active span{transform:scale(.94)}
+.card-remove{position:absolute;z-index:3;top:0;right:0;width:44px;height:44px;padding:6px;border:0;background:transparent;display:flex;align-items:flex-start;justify-content:flex-end;-webkit-tap-highlight-color:transparent}
+.card-remove span{width:26px;height:26px;border-radius:50%;background:rgb(0 0 0/.82);color:#fff;border:1px solid rgb(255 255 255/.55);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;line-height:1;box-shadow:0 2px 8px rgb(0 0 0/.5)}
+.card-remove:active span{transform:scale(.94)}
 .air-pill{position:absolute;left:6px;right:6px;bottom:8px;z-index:2;padding:3px 6px;border-radius:6px;background:rgb(0 0 0/.82);color:var(--logo);box-shadow:0 0 0 1px rgb(255 138 31/.45);font-family:var(--mono);font-size:10px;font-weight:500;line-height:1.3;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .cover .ph{position:absolute;inset:0;display:flex;align-items:flex-end;padding:10px;font-family:var(--display);font-size:15px;line-height:1.1;background:linear-gradient(160deg,var(--raise),var(--surface))}
 .cover .pill{position:absolute;top:6px;left:6px;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:999px;background:rgb(0 0 0/.6)}
@@ -295,7 +298,7 @@ h1,h2,h3{font-weight:400;margin:0}
 .wt-air{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin-bottom:20px;font-size:14px;color:var(--muted)}
 a.ep{text-align:center;text-decoration:none;color:inherit}
 .ep-wrap{position:relative;min-width:0}
-.ep-wrap .ep{width:100%}
+.ep-wrap .ep{width:100%;justify-content:flex-start;padding-left:10px}
 .ep-mark{position:absolute;top:3px;right:3px;z-index:2;width:28px;height:28px;border-radius:50%;border:1px solid var(--line);background:rgb(0 0 0/.72);color:var(--muted);font-size:13px;line-height:1;padding:0}
 .ep-mark[aria-pressed="true"]{background:var(--logo);border-color:var(--logo);color:#000}
 .acct-audio{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 10px 4px;color:var(--muted);font-size:14px}
