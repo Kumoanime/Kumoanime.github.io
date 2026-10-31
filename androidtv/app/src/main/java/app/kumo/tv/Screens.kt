@@ -243,7 +243,7 @@ fun TabsScreen() {
             Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (email != null) {
                     KText(email, 15, bold = true, lines = 1)
-                    KText("Watching and progress sync with your phone. ${Store.syncState}", 12, Muted)
+                    KText("Watching and progress are saved to your account. ${Store.syncState}", 12, Muted)
                 } else PhoneQr(PairMode.LOGIN, 190.dp, "Scan to log in from your phone. It needs to be on the same WiFi as this TV.")
             }
             // The first button stays in place so logging in doesn't lose focus.
