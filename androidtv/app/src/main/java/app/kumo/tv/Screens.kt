@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -244,9 +245,6 @@ fun AccountScreen() {
         }
     }
 }
-
-@Composable
-private inline fun key(k: Any, content: @Composable () -> Unit) = androidx.compose.runtime.key(k, content)
 
 @Composable
 fun ShowScreen(id: Int) {
