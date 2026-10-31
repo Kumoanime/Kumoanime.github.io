@@ -33,6 +33,19 @@ object AniList {
         return Media.parse(o).also { cache[id] = it }
     }
 
+    /** Scores for posters that come from saved progress, which don't store one. */
+    val ratings = androidx.compose.runtime.mutableStateMapOf<Int, String>()
+
+    suspend fun loadRatings(ids: List<Int>) {
+        val wanted = ids.distinct().filter { it !in ratings }.take(50)
+        if (wanted.isEmpty()) return
+        val q = "query(\$ids:[Int]){Page(perPage:50){media(id_in:\$ids,type:ANIME){id averageScore}}}"
+        val found = runCatching { graph(q, JSONObject().put("ids", org.json.JSONArray(wanted))) }.getOrNull() ?: return
+        found.optJSONObject("Page")?.optJSONArray("media").objects().forEach { m ->
+            if (!m.isNull("averageScore")) ratings[m.optInt("id")] = String.format(java.util.Locale.US, "%.1f", m.optInt("averageScore") / 10.0)
+        }
+    }
+
     class Aired(val media: Media, val episode: Int)
 
     /** Episodes of these shows that aired in the last two weeks, newest first. */

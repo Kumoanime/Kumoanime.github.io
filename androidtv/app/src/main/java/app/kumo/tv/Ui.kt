@@ -1,5 +1,17 @@
 package app.kumo.tv
 
+import android.widget.Toast
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.Icon
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import android.app.AlertDialog
 import android.content.Context
 import android.text.InputType
@@ -70,6 +82,8 @@ fun Tile(
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
     val focusRequester = requester ?: remember { FocusRequester() }
+    val scope = rememberCoroutineScope()
+    val hold = remember { HoldOk() }
     val wanted = Nav.restore
     LaunchedEffect(focusKey, wanted) {
         if (focusKey != null && wanted == focusKey) {
@@ -94,8 +108,34 @@ fun Tile(
             .clip(shape)
             .background(if (focused) focusedBackground else background)
             .border(if (focused && outline) 2.dp else 0.dp, if (focused && outline) Color.White else Color.Transparent, shape)
+            .then(
+                if (onLongClick == null) Modifier
+                else Modifier.onPreviewKeyEvent { e ->
+                    val native = e.nativeKeyEvent
+                    if (native.keyCode != android.view.KeyEvent.KEYCODE_DPAD_CENTER && native.keyCode != android.view.KeyEvent.KEYCODE_ENTER) return@onPreviewKeyEvent false
+                    if (e.type == KeyEventType.KeyDown && native.repeatCount == 0) {
+                        hold.armed = true
+                        hold.timer = scope.launch {
+                            delay(600)
+                            hold.armed = false
+                            onLongClick()
+                        }
+                    } else if (e.type == KeyEventType.KeyUp) {
+                        hold.timer?.cancel()
+                        if (hold.armed) onClick()
+                        hold.armed = false
+                    }
+                    true
+                },
+            )
             .combinedClickable(interactionSource = source, indication = null, onLongClick = onLongClick, onClick = onClick),
     ) { content(focused) }
+}
+
+/** Remotes differ in what they send while OK is held, so a timer decides what a hold is. */
+private class HoldOk {
+    var armed = false
+    var timer: Job? = null
 }
 
 @Composable
@@ -112,25 +152,35 @@ fun KButton(label: String, modifier: Modifier = Modifier, focusKey: String? = nu
 
 class Hero(val title: String, val image: String?, val meta: String, val text: String?)
 
-class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onLong: (() -> Unit)? = null)
+class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onRemove: (() -> Unit)? = null)
 
 val PosterW = 118.dp
 val PosterH = 170.dp
 
 @Composable
 fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val rating = item.rating ?: AniList.ratings[item.id]
     Column(modifier.width(PosterW)) {
         Tile(
             Modifier.width(PosterW).height(PosterH),
             focusKey = item.key,
             background = Surface,
             onFocused = { item.hero?.let { HomeData.heroTarget = it } },
-            onLongClick = item.onLong,
+            onLongClick = { posterMenu(context, item) },
             onClick = { if (item.ep != null) Nav.push(Route.Watch(item.id, item.ep, false)) else Nav.push(Route.Show(item.id)) },
         ) {
             if (item.image != null) AsyncImage(item.image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else KText(item.title, 13, bold = true, modifier = Modifier.padding(8.dp))
             item.pct?.let { Bar(it, Modifier.align(Alignment.BottomStart)) }
+            if (rating != null) Row(
+                Modifier.align(Alignment.TopEnd).padding(5.dp).clip(RoundedCornerShape(7.dp)).background(Color(0xCC000000)).padding(horizontal = 5.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Star, null, Modifier.size(10.dp), tint = Orange)
+                KText(rating, 10, bold = true)
+            }
         }
         if (item.caption) {
             KText(item.title, 12, bold = true, lines = 1, modifier = Modifier.padding(top = 7.dp))
@@ -179,6 +229,19 @@ fun confirm(context: Context, title: String, action: String, onYes: () -> Unit) 
         .setPositiveButton(action) { _, _ -> onYes() }
         .setNegativeButton("Cancel", null)
         .show()
+}
+
+/** What holding OK on a poster offers. */
+private fun posterMenu(context: Context, item: PosterItem) {
+    val route = "#/a/${item.id}"
+    val watching = Store.inWatchlist(route)
+    val options = listOf(if (watching) "Remove from Watching" else "Add to Watching") + listOfNotNull(if (item.onRemove != null) "Remove from Continue watching" else null)
+    pick(context, item.title, options) { i ->
+        if (i == 0) {
+            Store.toggleWatch(route, item.title, item.image)
+            Toast.makeText(context, if (watching) "Removed from Watching" else "Added to Watching", Toast.LENGTH_SHORT).show()
+        } else item.onRemove?.invoke()
+    }
 }
 
 fun pick(context: Context, title: String, items: List<String>, onPick: (Int) -> Unit) {

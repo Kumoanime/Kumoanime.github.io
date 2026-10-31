@@ -249,18 +249,17 @@ fun HomeScreen() {
             KText(it.text ?: "", 13, Muted, lines = 3)
         }
     }
+    LaunchedEffect(cont.size) { AniList.loadRatings(cont.mapNotNull { routeId(it.route) }) }
     LazyColumn(rowKeys.weight(1f), state = HomeData.list, contentPadding = PaddingValues(bottom = 220.dp)) {
         if (cont.isNotEmpty()) item(key = "continue") {
-            Rail(0, "continue", "Continue watching  ·  hold OK to remove", cont.mapNotNull { c ->
+            Rail(0, "continue", "Continue watching", cont.mapNotNull { c ->
                 val id = routeId(c.route) ?: return@mapNotNull null
-                PosterItem(if (c === cont.first()) "home:first" else "continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, hero = Hero(c.title, c.poster, c.label, null), onLong = {
-                    confirm(context, "Remove ${c.title} from Continue watching?", "Remove") { Store.hideFromContinue(c.route); Nav.restore = "home:first" }
-                })
+                PosterItem(if (c === cont.first()) "home:first" else "continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, hero = Hero(c.title, c.poster, c.label, null), onRemove = { Store.hideFromContinue(c.route); Nav.restore = "home:first" })
             })
         }
         if (fresh.isNotEmpty()) item(key = "fresh") {
             Rail(freshRow, "fresh", "New episodes", fresh.map { a ->
-                PosterItem(if (cont.isEmpty() && a === fresh.first()) "home:first" else "fresh:${a.media.id}", a.media.id, a.media.title, a.media.cover, "Episode ${a.episode}", ep = a.episode, hero = a.media.hero())
+                PosterItem(if (cont.isEmpty() && a === fresh.first()) "home:first" else "fresh:${a.media.id}", a.media.id, a.media.title, a.media.cover, "Episode ${a.episode}", rating = a.media.rating, ep = a.episode, hero = a.media.hero())
             })
         }
         itemsIndexed(HomeData.rows, key = { _, r -> r.key }) { i, r ->
@@ -304,6 +303,7 @@ fun SearchScreen() {
 fun WatchingScreen() {
     val v = Store.version
     val list = remember(v) { Store.watchingItems() }
+    LaunchedEffect(list.size) { AniList.loadRatings(list.mapNotNull { routeId(it.optString("route")) }) }
     if (list.isEmpty()) { Centered("Shows you add to Watching appear here."); return }
     LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         items(list, key = { it.optString("route") }) { o ->
