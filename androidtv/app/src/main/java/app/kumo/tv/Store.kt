@@ -52,10 +52,44 @@ object Store {
     var subHigh: Boolean
         get() = sp.getBoolean("subHigh", false)
         set(v) { sp.edit().putBoolean("subHigh", v).apply(); version++ }
+    var skipFiller: Boolean
+        get() = sp.getBoolean("skipFiller", false)
+        set(v) { sp.edit().putBoolean("skipFiller", v).apply(); version++ }
+
+    // Choices made in the player belong to that show; Settings holds the defaults.
+    fun subSizeFor(id: Int) = sp.getInt("subSize:$id", subSize)
+    fun setSubSize(id: Int, v: Int) { sp.edit().putInt("subSize:$id", v).apply(); version++ }
+    fun subHighFor(id: Int) = sp.getBoolean("subHigh:$id", subHigh)
+    fun setSubHigh(id: Int, v: Boolean) { sp.edit().putBoolean("subHigh:$id", v).apply(); version++ }
+    fun audioLang(id: Int) = sp.getString("audioLang:$id", null)
+    fun setAudioLang(id: Int, lang: String) { sp.edit().putString("audioLang:$id", lang).apply() }
+    fun subLang(id: Int) = sp.getString("subLang:$id", null)
+    fun subOff(id: Int) = sp.getBoolean("subOff:$id", false)
+    fun setSubLang(id: Int, lang: String?) {
+        val e = sp.edit().putBoolean("subOff:$id", false)
+        if (lang != null) e.putString("subLang:$id", lang)
+        e.apply()
+    }
+    fun setSubOff(id: Int) { sp.edit().putBoolean("subOff:$id", true).apply() }
+
+    // ---- AniList link: the token stays on this TV ----
+    val aniListToken get() = sp.getString("anilistToken", null)
+    var aniListName by mutableStateOf<String?>(null)
+    fun setAniList(token: String, name: String) {
+        sp.edit().putString("anilistToken", token).putString("anilistName", name).apply()
+        aniListName = name
+    }
+    fun clearAniList() {
+        sp.edit().remove("anilistToken").remove("anilistName").remove("anilistQueue").apply()
+        aniListName = null
+    }
+    fun aniListQueue(): Set<String> = sp.getStringSet("anilistQueue", emptySet()) ?: emptySet()
+    fun queueAniList(item: String) { sp.edit().putStringSet("anilistQueue", aniListQueue() + item).apply() }
+    fun unqueueAniList(item: String) { sp.edit().putStringSet("anilistQueue", aniListQueue() - item).apply() }
 
     /** The Sub, Dub or Other last chosen for this show. */
     fun kindFor(id: Int): Audio? = sp.getString("kind:$id", null)?.let { name -> Audio.entries.firstOrNull { it.name == name } }
-    fun setKind(id: Int, kind: Audio) { sp.edit().putString("kind:$id", kind.name).apply() }
+    fun setKind(id: Int, kind: Audio) { sp.edit().putString("kind:$id", kind.name).remove("audioLang:$id").apply() }
 
     var prefer: Audio
         get() = if (sp.getString("audio", "sub") == "dub") Audio.DUB else Audio.SUB
@@ -72,6 +106,7 @@ object Store {
             }
         }
         accountEmail = sp.getString("email", null)
+        aniListName = sp.getString("anilistName", null)
     }
 
     private fun obj(key: String) = runCatching { JSONObject(sp.getString(key, "{}") ?: "{}") }.getOrDefault(JSONObject())
@@ -108,6 +143,7 @@ object Store {
         if (watchlist.has(route)) { watchlist.remove(route); removed.put(route, now()) }
         else watchlist.put(route, JSONObject().put("route", route).put("title", title).put("poster", poster ?: JSONObject.NULL).put("added", now()))
         persist(); scheduleSync()
+        if (watchlist.has(route)) route.substringAfterLast('/').toIntOrNull()?.let { AniListSync.queue(it, 0) }
     }
 
     private fun now() = System.currentTimeMillis()
@@ -115,10 +151,45 @@ object Store {
 
     fun saveProgress(key: String, t: Double, d: Double, route: String, title: String, poster: String?, label: String) {
         val row = progress.optJSONObject(key) ?: JSONObject()
+        val before = row.optDouble("d", 0.0).let { if (it > 0) row.optDouble("t", 0.0) / it else 0.0 }
         row.remove("hidden")
         row.put("t", t).put("d", d).put("route", route).put("title", title).put("poster", poster ?: JSONObject.NULL).put("label", label).put("updated", now())
         progress.put(key, row)
         persist(); scheduleSync()
+        if (d > 0 && t / d > 0.92 && before <= 0.92) {
+            val id = route.substringAfterLast('/').toIntOrNull()
+            val ep = key.removePrefix("$route:").toIntOrNull()
+            if (id != null && ep != null) AniListSync.queue(id, ep)
+        }
+    }
+
+    class Stats(val hours: Double, val episodes: Int, val shows: Int, val month: Int, val top: List<Pair<String, Double>>, val ids: List<Int>)
+
+    /** Worked out from saved progress. Episodes only marked as watched count as finished but add no time. */
+    fun stats(): Stats {
+        val time = HashMap<String, Double>()
+        val names = HashMap<String, String>()
+        var finished = 0
+        var month = 0
+        val start = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.DAY_OF_MONTH, 1); set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+        }.timeInMillis
+        for (k in keys(progress)) {
+            val p = progress.optJSONObject(k) ?: continue
+            val route = p.str("route") ?: continue
+            val d = p.optDouble("d", 0.0)
+            val t = p.optDouble("t", 0.0)
+            if (d <= 0 || t <= 0) continue
+            names[route] = p.str("title") ?: ""
+            val played = if (d == 1000.0 && t == 1000.0) 0.0 else minOf(t, d)
+            time[route] = (time[route] ?: 0.0) + played
+            if (t / d > 0.92) {
+                finished++
+                if (p.optLong("updated") >= start) month++
+            }
+        }
+        val ranked = time.entries.sortedByDescending { it.value }
+        return Stats(time.values.sum() / 3600, finished, time.size, month, ranked.take(5).map { (names[it.key] ?: "") to it.value / 3600 }, ranked.mapNotNull { it.key.substringAfterLast('/').toIntOrNull() })
     }
 
     fun rowFor(route: String, ep: Int): JSONObject? = progress.optJSONObject("$route:$ep")

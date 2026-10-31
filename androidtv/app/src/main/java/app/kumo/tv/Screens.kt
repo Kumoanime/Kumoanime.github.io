@@ -2,6 +2,7 @@ package app.kumo.tv
 
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
@@ -48,8 +49,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.LazyGridState
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -596,7 +597,10 @@ fun WatchingScreen() {
     if (list.isEmpty()) { Centered("Shows you add to Watching appear here."); return }
     LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), state = state, contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 22.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item(key = "calendar", span = { GridItemSpan(maxLineSpan) }) {
-            Row { KButton("Airing calendar", Modifier.focusProperties { left = HomeData.dockFocus[HomeData.tab] }, focusKey = "watch:calendar") { Nav.push(Route.Calendar) } }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                KButton("Airing calendar", Modifier.focusProperties { left = HomeData.dockFocus[HomeData.tab] }, focusKey = "watch:calendar") { Nav.push(Route.Calendar) }
+                KButton("Your stats", focusKey = "watch:stats") { Nav.push(Route.Stats) }
+            }
         }
         itemsIndexed(list, key = { _, o -> o.optString("route") }) { i, o ->
             val id = routeId(o.optString("route")) ?: return@itemsIndexed
@@ -731,6 +735,7 @@ fun SettingsScreen() {
             Toggle("Auto Skip", Store.autoSkip, "set:skip") { Store.autoSkip = !Store.autoSkip }
             Toggle(if (Store.prefer == Audio.DUB) "Audio: Dub" else "Audio: Sub", true, "set:audio") { Store.prefer = if (Store.prefer == Audio.DUB) Audio.SUB else Audio.DUB }
             Toggle("Menu sound", Store.menuSound, "set:sound") { Store.menuSound = !Store.menuSound }
+            Toggle("Skip filler", Store.skipFiller, "set:filler") { Store.skipFiller = !Store.skipFiller }
         }
         KText("Subtitles", 15, Muted, bold = true, modifier = Modifier.padding(top = 18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -740,6 +745,84 @@ fun SettingsScreen() {
         KText("Add-ons and devices", 15, Muted, bold = true, modifier = Modifier.padding(top = 18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             KButton(if (addonCount == 1) "Add-ons  ·  1 installed" else "Add-ons  ·  $addonCount installed", focusKey = "set:addons") { Nav.push(Route.Addons) }
+            if (AniListSync.CLIENT_ID != 0) KButton(Store.aniListName?.let { "AniList  ·  $it" } ?: "Link AniList", focusKey = "set:anilist") { Nav.push(Route.LinkAniList) }
+        }
+    }
+}
+
+@Composable
+fun LinkAniListScreen() {
+    val name = Store.aniListName
+    Row(Modifier.fillMaxSize().padding(40.dp), horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            KText("AniList", 26, bold = true)
+            KText(
+                if (name != null) "Linked to $name. Episodes you finish here update your AniList. Kumo only moves entries forward and never removes anything."
+                else "Link your AniList so episodes you finish here update it automatically.",
+                14, Color(0xFFD5D5DB),
+            )
+            if (name != null) KButton("Unlink", focusKey = "anilist:unlink") { Store.clearAniList() }
+            else KText("Scan the code with your phone to start.", 13, Muted)
+        }
+        if (name == null) PhoneQr(PairMode.ANILIST, 220.dp, "Your phone needs to be on the same WiFi as this TV.")
+    }
+}
+
+@Composable
+fun RelatedScreen(id: Int) {
+    var list by remember { mutableStateOf<List<AniList.Linked>?>(null) }
+    var failed by remember { mutableStateOf(false) }
+    LaunchedEffect(id) { runCatching { list = AniList.related(id) }.onFailure { failed = true } }
+    val shows = list ?: run { Centered(if (failed) "Couldn't load related shows." else "Loading…"); return }
+    if (shows.isEmpty()) { Centered("Nothing related to this show."); return }
+    Column(Modifier.fillMaxSize().padding(start = 28.dp, end = 28.dp, top = 24.dp)) {
+        KText("Related shows", 26, bold = true)
+        KText("In release order", 13, Muted, modifier = Modifier.padding(top = 2.dp, bottom = 12.dp))
+        LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            items(shows, key = { it.media.id }) { l ->
+                val label = listOfNotNull(l.relation, l.media.seasonYear?.toString()).joinToString("  ·  ")
+                Poster(PosterItem("related:${l.media.id}", l.media.id, l.media.title, l.media.cover, label, rating = l.media.rating))
+            }
+        }
+    }
+}
+
+@Composable
+fun StatsScreen() {
+    val stats = remember { Store.stats() }
+    var genres by remember { mutableStateOf<List<Pair<String, Int>>>(emptyList()) }
+    LaunchedEffect(Unit) {
+        val found = runCatching { AniList.genres(stats.ids) }.getOrDefault(emptyMap())
+        genres = found.values.flatten().groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(5).map { it.key to it.value }
+    }
+    val hours = if (stats.hours < 10) String.format(java.util.Locale.US, "%.1f", stats.hours) else stats.hours.toInt().toString()
+    Column(Modifier.fillMaxSize().padding(start = 40.dp, end = 40.dp, top = 28.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        KText("Your stats", 26, bold = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            listOf(hours to "hours watched", "${stats.episodes}" to "episodes finished", "${stats.shows}" to "shows started", "${stats.month}" to "finished this month").forEach { (n, what) ->
+                Column(Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(Surface).padding(14.dp)) {
+                    KText(n, 30, Orange, bold = true, lines = 1)
+                    KText(what, 12, Muted, lines = 1)
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                KText("Most watched", 15, Muted, bold = true)
+                val most = stats.top.firstOrNull()?.second ?: 0.0
+                stats.top.forEach { (title, time) ->
+                    KText(title, 13, lines = 1)
+                    Bar(if (most > 0) (time / most).toFloat() else 0f)
+                }
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                KText("Favourite genres", 15, Muted, bold = true)
+                val most = genres.firstOrNull()?.second ?: 0
+                genres.forEach { (name, n) ->
+                    KText(name, 13, lines = 1)
+                    Bar(if (most > 0) n.toFloat() / most else 0f)
+                }
+            }
         }
     }
 }
@@ -779,6 +862,8 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
     val episodes = rememberLazyListState()
     var details by remember { mutableStateOf<Map<Int, EpisodeInfo>>(emptyMap()) }
     LaunchedEffect(m.id) { if (!m.isMovie) details = AniList.episodes(m.id) }
+    var filler by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    LaunchedEffect(m.id) { if (!m.isMovie) filler = Filler.episodes(m.idMal) }
     LaunchedEffect(m.id) {
         // From the bell or back from the player: return to that episode, however far down it is.
         val back = Nav.restore?.removePrefix("ep:")?.toIntOrNull()
@@ -804,11 +889,12 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
                 KText(m.synopsis ?: "", 13, Color(0xFFD5D5DB), lines = 9, modifier = Modifier.padding(top = 12.dp))
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (count > 0) KButton(if (m.isMovie) "Play" else "Play episode $next", focusKey = "show:play", solid = true) { LastFailure.message = null; choosing = next }
                     KButton(if (Store.inWatchlist(m.route)) "✓ Watching" else "+ Watching", focusKey = "show:list") { Store.toggleWatch(m.route, m.title, m.cover) }
                     if (!m.isMovie && count > 0) KButton(if (marking) "Done marking" else "Mark watched") { marking = !marking }
                     m.trailer?.let { trailer -> KButton("▶ Trailer", focusKey = "show:trailer") { openTrailer(context, trailer) } }
+                    KButton("Related", focusKey = "show:related") { Nav.push(Route.Related(m.id)) }
                 }
                 LastFailure.message?.let { KText(it, 13, Orange, modifier = Modifier.padding(top = 10.dp)) }
                 if (marking) KText("Press OK on an episode to mark it watched or unwatched.", 13, Orange, modifier = Modifier.padding(top = 10.dp))
@@ -831,7 +917,7 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
                                     }
                                     Column(Modifier.weight(1f)) {
                                         KText((if (seen) "✓  " else "") + "$n.  ${info?.title ?: "Episode $n"}", 14, if (seen) Orange else Color.White, bold = true, lines = 1)
-                                        KText(listOfNotNull(info?.minutes?.let { "$it min" }, info?.aired).joinToString("  ·  "), 11, Muted, lines = 1)
+                                        KText(listOfNotNull(if (n in filler) "Filler" else null, info?.minutes?.let { "$it min" }, info?.aired).joinToString("  ·  "), 11, if (n in filler) Orange else Muted, lines = 1)
                                         info?.overview?.let { KText(it, 12, Color(0xFFD5D5DB), lines = 2, modifier = Modifier.padding(top = 2.dp)) }
                                     }
                                 }

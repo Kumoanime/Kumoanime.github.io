@@ -46,6 +46,9 @@ sealed class Route {
     data class Watch(val id: Int, val ep: Int, val auto: Boolean) : Route()
     data class Player(val session: PlaySession) : Route()
     data object Addons : Route()
+    data object Stats : Route()
+    data object LinkAniList : Route()
+    data class Related(val id: Int) : Route()
 }
 
 object Nav {
@@ -81,6 +84,9 @@ class MainActivity : ComponentActivity() {
                         is Route.Player -> PlayerScreen(r.session)
                         Route.Addons -> AddonsScreen()
                         Route.Calendar -> CalendarScreen()
+                        Route.Stats -> StatsScreen()
+                        Route.LinkAniList -> LinkAniListScreen()
+                        is Route.Related -> RelatedScreen(r.id)
                     }
                     if (!Splash.done) SplashScreen()
                 }
@@ -125,6 +131,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         lifecycleScope.launch { Store.sync() }
+        AniListSync.flush()
     }
 
     /** Lets a long add-on link be sent over ADB instead of typed with the remote. */

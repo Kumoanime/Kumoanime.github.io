@@ -39,7 +39,7 @@ import java.net.Socket
 import java.net.URLDecoder
 import java.security.SecureRandom
 
-enum class PairMode { LOGIN, ADDONS }
+enum class PairMode { LOGIN, ADDONS, ANILIST }
 
 private fun html(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
@@ -118,6 +118,11 @@ class PairServer(private val token: String, private val mode: PairMode, private 
             }
             notes.add(result.fold({ "Added ${it.name}." }, { "Couldn't add that link: ${it.message}" }))
         }
+        val code = form["token"]?.trim().orEmpty()
+        if (mode == PairMode.ANILIST && code.isNotEmpty()) {
+            val result = runCatching { withContext(Dispatchers.Main) { AniListSync.link(code) } }
+            notes.add(result.fold({ "Linked to $it on AniList." }, { "That code didn't work. Copy all of it and try again." }))
+        }
         if (notes.isEmpty()) notes.add("Nothing to send yet.")
         notes.forEach(report)
         notes
@@ -135,7 +140,9 @@ class PairServer(private val token: String, private val mode: PairMode, private 
         c.getOutputStream().apply { write(head.toByteArray()); write(bytes); flush() }
     }
 
-    private fun fields() = if (mode == PairMode.LOGIN) """<h2>Kumo account</h2><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none"></label>
+    private fun fields() = if (mode == PairMode.ANILIST) """<h2>AniList</h2><p><a style="color:#ff8a1f" target="_blank" rel="noopener" href="${AniListSync.authorizeUrl}">1. Sign in to AniList and approve Kumo</a></p>
+<label>2. Copy the code it shows, then paste it here<textarea name="token" rows="4" autocapitalize="none" autocorrect="off" spellcheck="false"></textarea></label>"""
+    else if (mode == PairMode.LOGIN) """<h2>Kumo account</h2><label>Email<input name="email" type="email" autocomplete="username" autocapitalize="none"></label>
 <label>Password<input name="password" type="password" autocomplete="current-password"></label>"""
     else """<h2>Add-ons</h2><label>Paste add-on links, one per line<textarea name="addons" rows="4" autocapitalize="none" autocorrect="off" spellcheck="false"></textarea></label>"""
 

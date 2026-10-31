@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -31,6 +32,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -116,7 +119,6 @@ fun PlayerScreen(session: PlaySession) {
     val m = session.media
     val key = "${m.route}:${session.ep}"
     val label = if (m.isMovie) "Movie" else "Episode ${session.ep}"
-    val hasNext = !m.isMovie && session.ep < m.episodeCount
     val player = remember { buildPlayer(context) }
     val focus = remember { FocusRequester() }
 
@@ -133,8 +135,20 @@ fun PlayerScreen(session: PlaySession) {
     var edDone by remember { mutableStateOf(false) }
     var countdown by remember { mutableIntStateOf(-1) }
     var nextCancelled by remember { mutableStateOf(false) }
-    var info by remember { mutableStateOf<EpisodeInfo?>(null) }
-    LaunchedEffect(Unit) { if (!m.isMovie) info = AniList.episodes(m.id)[session.ep] }
+    var recapDone by remember { mutableStateOf(false) }
+    var episodeInfo by remember { mutableStateOf<Map<Int, EpisodeInfo>>(emptyMap()) }
+    val info = episodeInfo[session.ep]
+    // Auto Next's target. Moves past filler when that's turned on.
+    var nextEp by remember { mutableIntStateOf(session.ep + 1) }
+    val hasNext = { !m.isMovie && nextEp <= m.episodeCount }
+    LaunchedEffect(Unit) { if (!m.isMovie) episodeInfo = AniList.episodes(m.id) }
+    LaunchedEffect(Unit) {
+        if (m.isMovie || !Store.skipFiller) return@LaunchedEffect
+        val filler = Filler.episodes(m.idMal)
+        var n = session.ep + 1
+        while (n in filler) n++
+        nextEp = n
+    }
 
     val save = {
         val d = player.duration
@@ -144,7 +158,7 @@ fun PlayerScreen(session: PlaySession) {
     val goNext = {
         save()
         Nav.pop()
-        val next = Route.Watch(m.id, session.ep + 1, true)
+        val next = Route.Watch(m.id, nextEp, true)
         if (Nav.stack.last() is Route.Watch) Nav.replace(next) else Nav.push(next)
     }
     val nextSource: (String) -> Unit = { why ->
@@ -190,9 +204,10 @@ fun PlayerScreen(session: PlaySession) {
     // that isn't ready in 30 seconds is abandoned.
     LaunchedEffect(index) {
         val row = session.candidates.getOrNull(index) ?: return@LaunchedEffect
-        val prefLang = if ((Store.kindFor(m.id) ?: Store.prefer) == Audio.DUB) "en" else "ja"
+        val prefLang = Store.audioLang(m.id) ?: if ((Store.kindFor(m.id) ?: Store.prefer) == Audio.DUB) "en" else "ja"
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-            .setPreferredAudioLanguage(prefLang).setPreferredTextLanguage("en").setSelectUndeterminedTextLanguage(true).build()
+            .setPreferredAudioLanguage(prefLang).setPreferredTextLanguage(Store.subLang(m.id) ?: "en").setSelectUndeterminedTextLanguage(true)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, Store.subOff(m.id)).build()
         val saved = Store.rowFor(m.route, session.ep)
         val t = saved?.optDouble("t", 0.0) ?: 0.0
         val d = saved?.optDouble("d", 0.0) ?: 0.0
@@ -216,13 +231,15 @@ fun PlayerScreen(session: PlaySession) {
             // Rewinding to before the intro or outro offers the skip again.
             if (s?.op != null && time < s.op.start) opDone = false
             if (s?.ed != null && time < s.ed.start) edDone = false
+            if (s?.recap != null && time < s.recap.start) recapDone = false
             if (Store.autoSkip && s != null) {
                 if (!opDone && SkipSources.inside(time, s.op)) { opDone = true; player.seekTo((s.op!!.endInclusive * 1000).toLong()) }
+                if (!recapDone && SkipSources.inside(time, s.recap)) { recapDone = true; player.seekTo((s.recap!!.endInclusive * 1000).toLong()) }
                 if (!edDone && SkipSources.inside(time, s.ed)) { edDone = true; player.seekTo((s.ed!!.endInclusive * 1000).toLong()) }
             }
             val nearEnd = duration > 30 && duration - time <= 12
-            if (hasNext && Store.autoNext && !nextCancelled && countdown < 0 && (nearEnd || ended)) countdown = 8
-            if (!hasNext && ended) { leave(); break }
+            if (hasNext() && Store.autoNext && !nextCancelled && countdown < 0 && (nearEnd || ended)) countdown = 8
+            if (!hasNext() && ended) { leave(); break }
             if (ended && (!Store.autoNext || nextCancelled)) { leave(); break }
         }
     }
@@ -251,6 +268,7 @@ fun PlayerScreen(session: PlaySession) {
     val s = skips
     val inOp = !opDone && SkipSources.inside(time, s?.op)
     val inEd = !edDone && SkipSources.inside(time, s?.ed)
+    val inRecap = !recapDone && SkipSources.inside(time, s?.recap)
     val poke = { overlayUntil = System.currentTimeMillis() + 3500 }
 
     BackHandler {
@@ -269,6 +287,7 @@ fun PlayerScreen(session: PlaySession) {
                     when {
                         native.repeatCount > 0 -> {}
                         countdown >= 0 -> countdown = 0
+                        inRecap -> { recapDone = true; player.seekTo((s!!.recap!!.endInclusive * 1000).toLong()) }
                         inOp -> { opDone = true; player.seekTo((s!!.op!!.endInclusive * 1000).toLong()) }
                         inEd -> { edDone = true; player.seekTo((s!!.ed!!.endInclusive * 1000).toLong()) }
                         else -> { player.playWhenReady = !player.playWhenReady; paused = !player.playWhenReady; poke() }
@@ -286,7 +305,7 @@ fun PlayerScreen(session: PlaySession) {
                 }
                 NativeKey.KEYCODE_DPAD_DOWN -> { poke(); true }
                 NativeKey.KEYCODE_DPAD_UP, NativeKey.KEYCODE_MENU -> {
-                    if (native.repeatCount == 0) trackMenu(context, player)
+                    if (native.repeatCount == 0) trackMenu(context, player, m.id)
                     true
                 }
                 else -> false
@@ -314,14 +333,15 @@ fun PlayerScreen(session: PlaySession) {
             },
             update = { view ->
                 Store.version  // Applies a size or position change straight away.
-                view.subtitleView?.setFractionalTextSize(SubFractions[Store.subSize])
-                view.subtitleView?.setBottomPaddingFraction(if (Store.subHigh) 0.18f else 0.07f)
+                view.subtitleView?.setFractionalTextSize(SubFractions[Store.subSizeFor(m.id)])
+                view.subtitleView?.setBottomPaddingFraction(if (Store.subHighFor(m.id)) 0.18f else 0.07f)
             },
             modifier = Modifier.fillMaxSize(),
         )
 
         val pill: String? = when {
-            countdown >= 0 -> "Episode ${session.ep + 1} in $countdown   ·   OK to play   ·   Back to cancel"
+            countdown >= 0 -> null
+            inRecap -> "Skip recap"
             inOp -> "Skip intro"
             inEd -> "Skip outro"
             else -> null
@@ -362,6 +382,20 @@ fun PlayerScreen(session: PlaySession) {
                 KText("▲  Audio and subtitles", 12, Muted, modifier = Modifier.padding(top = 9.dp))
             }
         }
+        if (countdown >= 0) {
+            val up = episodeInfo[nextEp]
+            Row(
+                Modifier.align(Alignment.BottomEnd).padding(end = 36.dp, bottom = 36.dp).width(420.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xE6101014)).padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsyncImage(up?.image ?: m.banner ?: m.cover, null, Modifier.size(150.dp, 84.dp).clip(RoundedCornerShape(9.dp)).background(Color(0xFF26262C)), contentScale = ContentScale.Crop)
+                Column(Modifier.weight(1f)) {
+                    KText("Up next  ·  Episode $nextEp", 12, Orange, bold = true, lines = 1)
+                    KText(up?.title ?: m.title, 15, bold = true, lines = 2)
+                    KText("Plays in $countdown   ·   OK now   ·   Back to cancel", 11, Muted, lines = 1, modifier = Modifier.padding(top = 3.dp))
+                }
+            }
+        }
         pill?.let {
             KText(it, 15, Color.Black, bold = true, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 36.dp, bottom = if (controls) 84.dp else 36.dp).background(Color.White, RoundedCornerShape(24.dp)).padding(horizontal = 22.dp, vertical = 10.dp))
         }
@@ -370,7 +404,7 @@ fun PlayerScreen(session: PlaySession) {
 
 /** Lists the audio and subtitle tracks of the playing file in a native dialog. */
 @OptIn(UnstableApi::class)
-private fun trackMenu(context: android.content.Context, player: ExoPlayer) {
+private fun trackMenu(context: android.content.Context, player: ExoPlayer, show: Int) {
     class Choice(val label: String, val apply: () -> Unit)
     val choices = ArrayList<Choice>()
     for (group in player.currentTracks.groups) {
@@ -386,13 +420,17 @@ private fun trackMenu(context: android.content.Context, player: ExoPlayer) {
                 player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                     .setTrackTypeDisabled(type, false)
                     .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i)).build()
+                if (type == C.TRACK_TYPE_AUDIO) f.language?.let { Store.setAudioLang(show, it) } else Store.setSubLang(show, f.language)
             })
         }
     }
     choices.add(Choice("Subtitles: off") {
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+        Store.setSubOff(show)
     })
-    choices.add(Choice("Subtitle size: ${SubSizes[Store.subSize]}") { Store.subSize = (Store.subSize + 1) % SubSizes.size })
-    choices.add(Choice(if (Store.subHigh) "Subtitle position: Higher" else "Subtitle position: Bottom") { Store.subHigh = !Store.subHigh })
+    val size = Store.subSizeFor(show)
+    val high = Store.subHighFor(show)
+    choices.add(Choice("Subtitle size: ${SubSizes[size]}") { Store.setSubSize(show, (size + 1) % SubSizes.size) })
+    choices.add(Choice(if (high) "Subtitle position: Higher" else "Subtitle position: Bottom") { Store.setSubHigh(show, !high) })
     pick(context, "Audio & subtitles", choices.map { it.label }) { choices[it].apply() }
 }

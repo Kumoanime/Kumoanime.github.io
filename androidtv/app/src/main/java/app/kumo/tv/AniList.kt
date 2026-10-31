@@ -4,13 +4,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
 
+private val LINK_NAMES = mapOf(
+    "PREQUEL" to "Earlier", "SEQUEL" to "Later", "PARENT" to "Main story", "SIDE_STORY" to "Side story",
+    "SPIN_OFF" to "Spin-off", "ALTERNATIVE" to "Alternative", "SUMMARY" to "Recap",
+)
+
 object AniList {
     private const val FIELDS = "id idMal title{romaji english} coverImage{large} bannerImage format status episodes seasonYear averageScore genres description(asHtml:false) nextAiringEpisode{episode airingAt} trailer{id site}"
     private val cache = HashMap<Int, Media>()
 
-    private suspend fun graph(query: String, vars: JSONObject): JSONObject {
+    suspend fun graph(query: String, vars: JSONObject, headers: Map<String, String> = emptyMap()): JSONObject {
         val body = JSONObject().put("query", query).put("variables", vars).toString()
-        val r = Net.post("https://graphql.anilist.co", body)
+        val r = Net.post("https://graphql.anilist.co", body, headers)
         if (!r.ok) throw Exception("AniList answered ${r.code}")
         return JSONObject(r.body).optJSONObject("data") ?: throw Exception("AniList didn't answer")
     }
@@ -72,6 +77,46 @@ object AniList {
             found[n] = EpisodeInfo(e.optJSONObject("title")?.str("en"), e.str("image"), e.int("runtime"), e.str("overview") ?: e.str("summary"), e.str("airDate"))
         }
         return found.also { episodesFound[id] = it }
+    }
+
+    class Linked(val media: Media, val relation: String?, val date: Int)
+
+    private suspend fun links(id: Int): List<Pair<Linked, String>> {
+        val q = "query(\$id:Int){Media(id:\$id){relations{edges{relationType(version:2) node{$FIELDS type isAdult startDate{year month}}}}}}"
+        return graph(q, JSONObject().put("id", id)).optJSONObject("Media")?.optJSONObject("relations")?.optJSONArray("edges").objects().mapNotNull { e ->
+            val node = e.optJSONObject("node") ?: return@mapNotNull null
+            val type = e.str("relationType") ?: return@mapNotNull null
+            if (node.str("type") != "ANIME" || node.optBoolean("isAdult") || node.str("format") == "MUSIC" || type !in LINK_NAMES) return@mapNotNull null
+            val start = node.optJSONObject("startDate")
+            val m = Media.parse(node)
+            if (m.id !in cache) cache[m.id] = m
+            Linked(m, LINK_NAMES[type], (start?.optInt("year", 9999) ?: 9999) * 100 + (start?.optInt("month", 12) ?: 12)) to type
+        }
+    }
+
+    /** Everything connected to a show in release order: its whole run of seasons, plus films and specials. */
+    suspend fun related(id: Int): List<Linked> {
+        val found = LinkedHashMap<Int, Linked>()
+        val walked = hashSetOf(id)
+        var queue = listOf(id)
+        for (hop in 0 until 6) {
+            val next = ArrayList<Int>()
+            for (show in queue) links(show).forEach { (l, type) ->
+                if (l.media.id != id && l.media.id !in found) found[l.media.id] = l
+                if ((type == "SEQUEL" || type == "PREQUEL") && walked.add(l.media.id)) next.add(l.media.id)
+            }
+            if (next.isEmpty()) break
+            queue = next
+        }
+        return found.values.sortedBy { it.date }
+    }
+
+    /** Genres for a list of shows, for the stats page. */
+    suspend fun genres(ids: List<Int>): Map<Int, List<String>> {
+        val q = "query(\$ids:[Int]){Page(perPage:50){media(id_in:\$ids,type:ANIME){id genres}}}"
+        return ids.chunked(50).flatMap { part ->
+            graph(q, JSONObject().put("ids", JSONArray(part))).optJSONObject("Page")?.optJSONArray("media").objects().map { it.optInt("id") to it.optJSONArray("genres").strings() }
+        }.toMap()
     }
 
     class Upcoming(val media: Media, val episode: Int, val at: Long)

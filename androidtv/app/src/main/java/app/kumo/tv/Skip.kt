@@ -10,7 +10,7 @@ import kotlin.math.abs
 
 private typealias Window = ClosedFloatingPointRange<Double>
 
-class SkipTimes(val op: Window?, val ed: Window?)
+class SkipTimes(val op: Window?, val ed: Window?, val recap: Window? = null)
 
 /**
  * Asks three community databases on every play, so a new episode gets its times
@@ -21,12 +21,13 @@ object SkipSources {
 
     private suspend fun aniSkip(mal: Int?, ep: Int, duration: Double): SkipTimes? {
         if (mal == null) return null
-        val r = Net.get("https://api.aniskip.com/v2/skip-times/$mal/$ep?types[]=op&types[]=ed&episodeLength=${duration.toInt()}")
+        val r = Net.get("https://api.aniskip.com/v2/skip-times/$mal/$ep?types[]=op&types[]=ed&types[]=recap&episodeLength=${duration.toInt()}")
         if (!r.ok) return null
         val root = JSONObject(r.body)
         if (!root.optBoolean("found")) return null
         var op: Window? = null
         var ed: Window? = null
+        var recap: Window? = null
         root.optJSONArray("results").objects().forEach { row ->
             val i = row.optJSONObject("interval") ?: return@forEach
             val start = i.optDouble("startTime")
@@ -35,9 +36,10 @@ object SkipSources {
             when (row.str("skipType")) {
                 "op" -> op = start..end
                 "ed" -> ed = start..end
+                "recap" -> recap = start..end
             }
         }
-        return SkipTimes(op, ed)
+        return SkipTimes(op, ed, recap)
     }
 
     private fun window(o: JSONObject?, duration: Double): Window? {
@@ -52,7 +54,7 @@ object SkipSources {
         val r = Net.get("https://api.theintrodb.org/v2/media?tmdb_id=$tmdb&season=${ids.imdbSeason ?: 1}&episode=$ep")
         if (!r.ok) return null
         val o = JSONObject(r.body)
-        return SkipTimes(window(o.optJSONArray("intro")?.optJSONObject(0), duration), window(o.optJSONArray("credits")?.optJSONObject(0), duration))
+        return SkipTimes(window(o.optJSONArray("intro")?.optJSONObject(0), duration), window(o.optJSONArray("credits")?.optJSONObject(0), duration), window(o.optJSONArray("recap")?.optJSONObject(0), duration))
     }
 
     private suspend fun introDb(ids: ShowIds, ep: Int, duration: Double): SkipTimes? {
@@ -73,7 +75,7 @@ object SkipSources {
         fun guarded(block: suspend () -> SkipTimes?) = async { withTimeoutOrNull(8000) { runCatching { block() }.getOrNull() } }
         val found = listOf(guarded { aniSkip(ids.mal, ep, duration) }, guarded { theIntroDb(ids, ep, duration) }, guarded { introDb(ids, ep, duration) }).awaitAll().filterNotNull()
         Log.d("KumoSkip", "ep $ep: ${found.size} of 3 sources answered, op ${found.mapNotNull { it.op }} ed ${found.mapNotNull { it.ed }}")
-        SkipTimes(agreed(found.mapNotNull { it.op }), agreed(found.mapNotNull { it.ed }))
+        SkipTimes(agreed(found.mapNotNull { it.op }), agreed(found.mapNotNull { it.ed }), agreed(found.mapNotNull { it.recap }))
     }
 
     /**
@@ -87,7 +89,7 @@ object SkipSources {
         val a = episode(ids, ep - 1, duration)
         val b = episode(ids, ep - 2, duration)
         val pattern = { x: Window?, y: Window? -> if (x != null && y != null && near(x, y)) x else null }
-        return SkipTimes(now.op ?: pattern(a.op, b.op), now.ed ?: pattern(a.ed, b.ed))
+        return SkipTimes(now.op ?: pattern(a.op, b.op), now.ed ?: pattern(a.ed, b.ed), now.recap)
     }
 
     fun inside(t: Double, w: Window?) = w != null && t >= w.start && t < w.endInclusive - 0.35
