@@ -41,6 +41,7 @@ class KumoApp : Application(), ImageLoaderFactory {
 
 sealed class Route {
     data object Tabs : Route()
+    data object Calendar : Route()
     data class Show(val id: Int, val ep: Int? = null, val choose: Boolean = false) : Route()
     data class Watch(val id: Int, val ep: Int, val auto: Boolean) : Route()
     data class Player(val session: PlaySession) : Route()
@@ -79,6 +80,7 @@ class MainActivity : ComponentActivity() {
                         is Route.Watch -> WatchScreen(r)
                         is Route.Player -> PlayerScreen(r.session)
                         Route.Addons -> AddonsScreen()
+                        Route.Calendar -> CalendarScreen()
                     }
                     if (!Splash.done) SplashScreen()
                 }

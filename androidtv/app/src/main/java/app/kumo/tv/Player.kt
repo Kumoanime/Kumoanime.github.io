@@ -61,6 +61,9 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 
+val SubSizes = listOf("Small", "Medium", "Large")
+private val SubFractions = listOf(0.043f, 0.0533f, 0.07f)
+
 class PlaySession(val media: Media, val ep: Int, val candidates: List<StreamRow>, val subtitles: List<Subtitle>, val ids: ShowIds)
 
 private fun clock(sec: Double): String {
@@ -131,6 +134,8 @@ fun PlayerScreen(session: PlaySession) {
     var edDone by remember { mutableStateOf(false) }
     var countdown by remember { mutableIntStateOf(-1) }
     var nextCancelled by remember { mutableStateOf(false) }
+    var info by remember { mutableStateOf<EpisodeInfo?>(null) }
+    LaunchedEffect(Unit) { if (!m.isMovie) info = AniList.episodes(m.id)[session.ep] }
 
     val save = {
         val d = player.duration
@@ -188,7 +193,7 @@ fun PlayerScreen(session: PlaySession) {
     // that isn't ready in 30 seconds is abandoned.
     LaunchedEffect(index) {
         val row = session.candidates.getOrNull(index) ?: return@LaunchedEffect
-        val prefLang = if (Store.prefer == Audio.DUB) "en" else "ja"
+        val prefLang = if ((Store.kindFor(m.id) ?: Store.prefer) == Audio.DUB) "en" else "ja"
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setPreferredAudioLanguage(prefLang).setPreferredTextLanguage("en").setSelectUndeterminedTextLanguage(true).build()
         val saved = Store.rowFor(m.route, session.ep)
@@ -304,9 +309,13 @@ fun PlayerScreen(session: PlaySession) {
                         setStyle(CaptionStyleCompat(android.graphics.Color.WHITE, android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT, CaptionStyleCompat.EDGE_TYPE_OUTLINE, android.graphics.Color.BLACK, null))
                         setApplyEmbeddedStyles(false)
                         setApplyEmbeddedFontSizes(false)
-                        setBottomPaddingFraction(0.07f)
                     }
                 }
+            },
+            update = { view ->
+                Store.version  // Applies a size or position change straight away.
+                view.subtitleView?.setFractionalTextSize(SubFractions[Store.subSize])
+                view.subtitleView?.setBottomPaddingFraction(if (Store.subHigh) 0.18f else 0.07f)
             },
             modifier = Modifier.fillMaxSize(),
         )
@@ -318,6 +327,7 @@ fun PlayerScreen(session: PlaySession) {
             else -> null
         }
         val controls = ready && (paused || System.currentTimeMillis() < overlayUntil)
+        if (ready && paused) Box(Modifier.fillMaxSize().background(Color(0x99000000)))
         if (!ready) {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator(Modifier.size(40.dp), color = Orange, strokeWidth = 3.dp)
@@ -338,7 +348,10 @@ fun PlayerScreen(session: PlaySession) {
                     .padding(start = 36.dp, end = 36.dp, top = 24.dp, bottom = 44.dp),
             ) {
                 KText(m.title, 20, bold = true, lines = 1)
-                KText(label, 13, Color(0xFFD5D5DB))
+                KText(listOfNotNull(label, info?.title).joinToString("  ·  "), 13, Color(0xFFD5D5DB), lines = 1)
+            }
+            if (paused) info?.overview?.let {
+                KText(it, 14, Color(0xFFE2E2E8), lines = 4, modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth(0.55f).padding(start = 36.dp, bottom = 96.dp))
             }
             Column(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth()
@@ -383,5 +396,7 @@ private fun trackMenu(context: android.content.Context, player: ExoPlayer) {
     choices.add(Choice("Subtitles: off") {
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
     })
+    choices.add(Choice("Subtitle size: ${SubSizes[Store.subSize]}") { Store.subSize = (Store.subSize + 1) % SubSizes.size })
+    choices.add(Choice(if (Store.subHigh) "Subtitle position: Higher" else "Subtitle position: Bottom") { Store.subHigh = !Store.subHigh })
     pick(context, "Audio & subtitles", choices.map { it.label }) { choices[it].apply() }
 }

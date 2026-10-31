@@ -22,6 +22,7 @@ data class Media(
     val genres: List<String>,
     val synopsis: String?,
     val nextEpisode: Int?,
+    val trailer: String? = null,
 ) {
     val route get() = "#/a/$id"
     val isMovie get() = format == "MOVIE"
@@ -51,6 +52,7 @@ data class Media(
                 genres = o.optJSONArray("genres").strings(),
                 synopsis = o.str("description")?.let(::stripHtml),
                 nextEpisode = o.optJSONObject("nextAiringEpisode")?.int("episode"),
+                trailer = o.optJSONObject("trailer")?.takeIf { it.str("site") == "youtube" }?.str("id"),
             )
         }
     }
@@ -72,6 +74,8 @@ data class ShowIds(
 )
 
 data class Subtitle(val url: String, val lang: String)
+
+class EpisodeInfo(val title: String?, val image: String?, val minutes: Int?, val overview: String?, val aired: String?)
 
 data class Stream(
     val name: String?,

@@ -45,6 +45,18 @@ object Store {
     var menuSound: Boolean
         get() = sp.getBoolean("menuSound", true)
         set(v) { sp.edit().putBoolean("menuSound", v).apply(); version++ }
+    /** 0 small, 1 medium, 2 large. */
+    var subSize: Int
+        get() = sp.getInt("subSize", 1)
+        set(v) { sp.edit().putInt("subSize", v).apply(); version++ }
+    var subHigh: Boolean
+        get() = sp.getBoolean("subHigh", false)
+        set(v) { sp.edit().putBoolean("subHigh", v).apply(); version++ }
+
+    /** The Sub, Dub or Other last chosen for this show. */
+    fun kindFor(id: Int): Audio? = sp.getString("kind:$id", null)?.let { name -> Audio.entries.firstOrNull { it.name == name } }
+    fun setKind(id: Int, kind: Audio) { sp.edit().putString("kind:$id", kind.name).apply() }
+
     var prefer: Audio
         get() = if (sp.getString("audio", "sub") == "dub") Audio.DUB else Audio.SUB
         set(v) { sp.edit().putString("audio", if (v == Audio.DUB) "dub" else "sub").apply(); version++ }

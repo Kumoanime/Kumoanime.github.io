@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.util.Calendar
 
 object AniList {
-    private const val FIELDS = "id idMal title{romaji english} coverImage{large} bannerImage format status episodes seasonYear averageScore genres description(asHtml:false) nextAiringEpisode{episode airingAt}"
+    private const val FIELDS = "id idMal title{romaji english} coverImage{large} bannerImage format status episodes seasonYear averageScore genres description(asHtml:false) nextAiringEpisode{episode airingAt} trailer{id site}"
     private val cache = HashMap<Int, Media>()
 
     private suspend fun graph(query: String, vars: JSONObject): JSONObject {
@@ -54,6 +54,37 @@ object AniList {
         val found = runCatching { graph(q, JSONObject().put("ids", org.json.JSONArray(wanted))) }.getOrNull() ?: return
         found.optJSONObject("Page")?.optJSONArray("media").objects().forEach { m ->
             if (!m.isNull("averageScore")) ratings[m.optInt("id")] = String.format(java.util.Locale.US, "%.1f", m.optInt("averageScore") / 10.0)
+        }
+    }
+
+    private val episodesFound = HashMap<Int, Map<Int, EpisodeInfo>>()
+
+    /** Pictures, titles and lengths from ani.zip. Empty when it doesn't know the show. */
+    suspend fun episodes(id: Int): Map<Int, EpisodeInfo> {
+        episodesFound[id]?.let { return it }
+        val r = runCatching { Net.get("https://api.ani.zip/mappings?anilist_id=$id") }.getOrNull()
+        if (r == null || !r.ok) return emptyMap()
+        val all = runCatching { JSONObject(r.body).optJSONObject("episodes") }.getOrNull() ?: return emptyMap()
+        val found = HashMap<Int, EpisodeInfo>()
+        all.keys().forEach { k ->
+            val n = k.toIntOrNull() ?: return@forEach
+            val e = all.optJSONObject(k) ?: return@forEach
+            found[n] = EpisodeInfo(e.optJSONObject("title")?.str("en"), e.str("image"), e.int("runtime"), e.str("overview") ?: e.str("summary"), e.str("airDate"))
+        }
+        return found.also { episodesFound[id] = it }
+    }
+
+    class Upcoming(val media: Media, val episode: Int, val at: Long)
+
+    /** Episodes of these shows due in the next seven days, soonest first. */
+    suspend fun upcoming(ids: List<Int>): List<Upcoming> {
+        if (ids.isEmpty()) return emptyList()
+        val q = "query(\$ids:[Int],\$from:Int,\$to:Int){Page(perPage:50){airingSchedules(mediaId_in:\$ids,airingAt_greater:\$from,airingAt_lesser:\$to,sort:TIME){episode airingAt media{$FIELDS}}}}"
+        val now = (System.currentTimeMillis() / 1000).toInt()
+        val v = JSONObject().put("ids", JSONArray(ids)).put("from", now).put("to", now + 7 * 86400)
+        return graph(q, v).optJSONObject("Page")?.optJSONArray("airingSchedules").objects().mapNotNull { row ->
+            val m = row.optJSONObject("media") ?: return@mapNotNull null
+            Upcoming(Media.parse(m), row.int("episode") ?: return@mapNotNull null, row.optLong("airingAt") * 1000)
         }
     }
 

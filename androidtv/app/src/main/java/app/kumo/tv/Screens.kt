@@ -1,5 +1,9 @@
 package app.kumo.tv
 
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import androidx.compose.animation.Crossfade
@@ -590,10 +594,13 @@ fun WatchingScreen() {
     val state = rememberLazyGridState()
     LaunchedEffect(list.size) { AniList.loadRatings(list.mapNotNull { routeId(it.optString("route")) }) }
     if (list.isEmpty()) { Centered("Shows you add to Watching appear here."); return }
-    LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), state = state, contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 72.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), state = state, contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 22.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item(key = "calendar", span = { GridItemSpan(maxLineSpan) }) {
+            Row { KButton("Airing calendar", Modifier.focusProperties { left = HomeData.dockFocus[HomeData.tab] }, focusKey = "watch:calendar") { Nav.push(Route.Calendar) } }
+        }
         itemsIndexed(list, key = { _, o -> o.optString("route") }) { i, o ->
             val id = routeId(o.optString("route")) ?: return@itemsIndexed
-            Poster(PosterItem("watching:$id", id, o.str("title") ?: "", o.str("poster"), ""), leftEdge(state, i))
+            Poster(PosterItem("watching:$id", id, o.str("title") ?: "", o.str("poster"), ""), leftEdge(state, i + 1))
         }
     }
 }
@@ -646,6 +653,64 @@ fun AddonsScreen() {
     }
 }
 
+private fun countdown(ms: Long): String {
+    val minutes = (ms / 60_000).coerceAtLeast(0)
+    return when {
+        minutes >= 1440 -> "${minutes / 1440}d ${minutes % 1440 / 60}h"
+        minutes >= 60 -> "${minutes / 60}h ${minutes % 60}m"
+        else -> "${minutes}m"
+    }
+}
+
+/** The next seven days for shows in Watching. */
+@Composable
+fun CalendarScreen() {
+    var list by remember { mutableStateOf<List<AniList.Upcoming>?>(null) }
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        val ids = Store.watchingItems().mapNotNull { routeId(it.optString("route")) }
+        list = runCatching { AniList.upcoming(ids) }.getOrDefault(emptyList())
+        if (Nav.restore == null) Nav.restore = list?.firstOrNull()?.let { "cal:${it.media.id}:${it.episode}" }
+        while (true) { delay(60_000); now = System.currentTimeMillis() }
+    }
+    val days = remember(list) {
+        val zone = java.time.ZoneId.systemDefault()
+        val today = java.time.LocalDate.now(zone)
+        (0L..6L).map { today.plusDays(it) }.map { day -> day to list.orEmpty().filter { java.time.Instant.ofEpochMilli(it.at).atZone(zone).toLocalDate() == day } }
+    }
+    Column(Modifier.fillMaxSize().padding(start = 32.dp, end = 32.dp, top = 24.dp)) {
+        KText("Airing calendar", 26, bold = true)
+        val soonest = list?.firstOrNull()
+        KText(
+            when {
+                list == null -> "Loading…"
+                soonest == null -> "Nothing in Watching airs in the next seven days."
+                else -> "Next: ${soonest.media.title}, episode ${soonest.episode}, in ${countdown(soonest.at - now)}"
+            },
+            14, Orange, lines = 1, modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
+        )
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            days.forEachIndexed { i, (day, shows) ->
+                Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KText(if (i == 0) "Today" else day.format(java.time.format.DateTimeFormatter.ofPattern("EEE d")), 13, if (i == 0) Orange else Color.White, bold = true, lines = 1)
+                    shows.forEach { u ->
+                        val time = java.time.Instant.ofEpochMilli(u.at).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+                        Tile(Modifier.fillMaxWidth(), focusKey = "cal:${u.media.id}:${u.episode}", radius = 10.dp, grow = 1.03f, background = Surface, onClick = { Nav.push(Route.Show(u.media.id)) }) {
+                            Column {
+                                AsyncImage(u.media.banner ?: u.media.cover, null, Modifier.fillMaxWidth().height(56.dp), contentScale = ContentScale.Crop)
+                                Column(Modifier.padding(7.dp)) {
+                                    KText(u.media.title, 11, bold = true, lines = 2)
+                                    KText("Ep ${u.episode}  ·  $time", 10, Muted, lines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun SettingsScreen() {
     Store.version  // Redraws the toggles when a setting changes.
@@ -658,6 +723,11 @@ fun SettingsScreen() {
             Toggle("Auto Skip", Store.autoSkip, "set:skip") { Store.autoSkip = !Store.autoSkip }
             Toggle(if (Store.prefer == Audio.DUB) "Audio: Dub" else "Audio: Sub", true, "set:audio") { Store.prefer = if (Store.prefer == Audio.DUB) Audio.SUB else Audio.DUB }
             Toggle("Menu sound", Store.menuSound, "set:sound") { Store.menuSound = !Store.menuSound }
+        }
+        KText("Subtitles", 15, Muted, bold = true, modifier = Modifier.padding(top = 18.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            KButton("Size: ${SubSizes[Store.subSize]}", focusKey = "set:subsize") { Store.subSize = (Store.subSize + 1) % SubSizes.size }
+            KButton(if (Store.subHigh) "Position: Higher" else "Position: Bottom", focusKey = "set:subpos") { Store.subHigh = !Store.subHigh }
         }
         KText("Add-ons and devices", 15, Muted, bold = true, modifier = Modifier.padding(top = 18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -698,14 +768,18 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
     val v = Store.version
     val count = m.episodeCount
     val next = remember(v) { Store.nextEpisode(m.route).coerceIn(1, maxOf(1, count)) }
-    val episodes = rememberLazyGridState()
+    val episodes = rememberLazyListState()
+    var details by remember { mutableStateOf<Map<Int, EpisodeInfo>>(emptyMap()) }
+    LaunchedEffect(m.id) { if (!m.isMovie) details = AniList.episodes(m.id) }
     LaunchedEffect(m.id) {
-        if (ep != null && ep <= count) {
-            // Opened from the bell: start on the new episode, however far down it is.
-            episodes.scrollToItem(ep - 1)
+        // From the bell or back from the player: return to that episode, however far down it is.
+        val back = Nav.restore?.removePrefix("ep:")?.toIntOrNull()
+        val target = ep ?: back
+        if (target != null && target <= count) {
+            if (!m.isMovie) episodes.scrollToItem(target - 1)
             withFrameNanos { }
-            Nav.restore = if (m.isMovie) "show:play" else "ep:$ep"
-            if (choose) { withFrameNanos { }; withFrameNanos { }; choosing = ep }
+            Nav.restore = if (m.isMovie) "show:play" else "ep:$target"
+            if (choose) { withFrameNanos { }; withFrameNanos { }; choosing = target }
         } else if (Nav.restore == null) Nav.restore = "show:play"
     }
     Box(Modifier.fillMaxSize()) {
@@ -721,21 +795,33 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
                     if (count > 0) KButton(if (m.isMovie) "Play" else "Play episode $next", focusKey = "show:play", solid = true) { LastFailure.message = null; choosing = next }
                     KButton(if (Store.inWatchlist(m.route)) "✓ Watching" else "+ Watching", focusKey = "show:list") { Store.toggleWatch(m.route, m.title, m.cover) }
                     if (!m.isMovie && count > 0) KButton(if (marking) "Done marking" else "Mark watched") { marking = !marking }
+                    m.trailer?.let { trailer -> KButton("▶ Trailer", focusKey = "show:trailer") { openTrailer(context, trailer) } }
                 }
                 LastFailure.message?.let { KText(it, 13, Orange, modifier = Modifier.padding(top = 10.dp)) }
                 if (marking) KText("Press OK on an episode to mark it watched or unwatched.", 13, Orange, modifier = Modifier.padding(top = 10.dp))
                 if (!m.isMovie) {
                     if (count == 0) KText("No episodes have aired yet.", 14, Muted, modifier = Modifier.padding(top = 16.dp))
-                    LazyVerticalGrid(GridCells.Adaptive(62.dp), Modifier.padding(top = 14.dp), state = episodes, contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(Modifier.padding(top = 12.dp), state = episodes, contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items((1..count).toList(), key = { it }) { n ->
                             val pct = Store.percent(m.route, n)
                             val seen = pct > 0.92f
-                            Tile(Modifier.height(44.dp), focusKey = "ep:$n", radius = 12.dp, outline = false, background = if (seen) Color(0x33FF8A1F) else Surface, focusedBackground = Color.White, onClick = {
+                            val info = details[n]
+                            Tile(Modifier.fillMaxWidth(), focusKey = "ep:$n", radius = 12.dp, grow = 1.01f, background = Surface, onClick = {
                                 if (marking) Store.markWatched(m.route, n, !seen, m.title, m.cover)
                                 else { LastFailure.message = null; choosing = n }
-                            }) { f ->
-                                KText((if (seen) "✓ " else "") + n, 14, if (f) Color.Black else if (seen) Orange else Color.White, bold = true, modifier = Modifier.align(Alignment.Center))
-                                if (pct > 0f && !seen) Bar(pct, Modifier.align(Alignment.BottomStart))
+                            }) {
+                                Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Box(Modifier.size(128.dp, 72.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFF26262C)), contentAlignment = Alignment.Center) {
+                                        if (info?.image != null) AsyncImage(info.image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                                        else KText("$n", 18, Muted, bold = true)
+                                        if (pct > 0f && !seen) Bar(pct, Modifier.align(Alignment.BottomStart))
+                                    }
+                                    Column(Modifier.weight(1f)) {
+                                        KText((if (seen) "✓  " else "") + "$n.  ${info?.title ?: "Episode $n"}", 14, if (seen) Orange else Color.White, bold = true, lines = 1)
+                                        KText(listOfNotNull(info?.minutes?.let { "$it min" }, info?.aired).joinToString("  ·  "), 11, Muted, lines = 1)
+                                        info?.overview?.let { KText(it, 12, Color(0xFFD5D5DB), lines = 2, modifier = Modifier.padding(top = 2.dp)) }
+                                    }
+                                }
                             }
                         }
                     }
@@ -749,6 +835,11 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
             }
         }
     }
+}
+
+private fun openTrailer(context: android.content.Context, id: String) {
+    runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://www.youtube.com/watch?v=$id"))) }
+        .onFailure { Toast.makeText(context, "Install YouTube to watch trailers", Toast.LENGTH_LONG).show() }
 }
 
 object LastFailure { var message by mutableStateOf<String?>(null) }
@@ -800,16 +891,13 @@ private fun rememberSources(id: Int, ep: Int): EpisodeSources {
     return sources
 }
 
-/** The Sub, Dub or Other last chosen, which the next episode uses too. */
-private var lastKind: Audio? = null
-
 /** Pick a type and the best source of it plays. */
 @Composable
 private fun BoxScope.EpisodeDock(m: Media, ep: Int, onClose: () -> Unit) {
     val sources = rememberSources(m.id, ep)
     var chosen by remember { mutableStateOf<Audio?>(null) }
     val kinds = listOf(Audio.SUB to "Sub", Audio.DUB to "Dub", Audio.OTHER to "Other")
-    val preferred = lastKind ?: Store.prefer
+    val preferred = Store.kindFor(m.id) ?: Store.prefer
     val first = remember { FocusRequester() }
     LaunchedEffect(Unit) { withFrameNanos { }; runCatching { first.requestFocus() } }
     LaunchedEffect(chosen) {
@@ -818,7 +906,7 @@ private fun BoxScope.EpisodeDock(m: Media, ep: Int, onClose: () -> Unit) {
         val list = sources.best(kind, ep)
         chosen = null
         if (list.isEmpty()) return@LaunchedEffect
-        lastKind = kind
+        Store.setKind(m.id, kind)
         Nav.lastFocus = if (m.isMovie) "show:play" else "ep:$ep"
         sources.play(ep, list)
     }
@@ -858,7 +946,7 @@ private fun BoxScope.EpisodeDock(m: Media, ep: Int, onClose: () -> Unit) {
 @Composable
 fun WatchScreen(r: Route.Watch) {
     val sources = rememberSources(r.id, r.ep)
-    val kind = lastKind ?: Store.prefer
+    val kind = Store.kindFor(r.id) ?: Store.prefer
     LaunchedEffect(sources) {
         LastFailure.message = null
         sources.ready(kind)
