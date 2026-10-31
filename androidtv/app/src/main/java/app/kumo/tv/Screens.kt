@@ -674,9 +674,17 @@ fun CalendarScreen() {
         while (true) { delay(60_000); now = System.currentTimeMillis() }
     }
     val days = remember(list) {
-        val zone = java.time.ZoneId.systemDefault()
-        val today = java.time.LocalDate.now(zone)
-        (0L..6L).map { today.plusDays(it) }.map { day -> day to list.orEmpty().filter { java.time.Instant.ofEpochMilli(it.at).atZone(zone).toLocalDate() == day } }
+        // java.util rather than java.time: this has to run below Android 8 too.
+        val midnight = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }
+        (0..6).map {
+            val start = midnight.timeInMillis
+            midnight.add(java.util.Calendar.DAY_OF_MONTH, 1) // Not 24 hours: clock changes make some days longer.
+            val end = midnight.timeInMillis
+            start to list.orEmpty().filter { u -> u.at >= start && u.at < end }
+        }
     }
     Column(Modifier.fillMaxSize().padding(start = 32.dp, end = 32.dp, top = 24.dp)) {
         KText("Airing calendar", 26, bold = true)
@@ -692,9 +700,9 @@ fun CalendarScreen() {
         Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             days.forEachIndexed { i, (day, shows) ->
                 Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    KText(if (i == 0) "Today" else day.format(java.time.format.DateTimeFormatter.ofPattern("EEE d")), 13, if (i == 0) Orange else Color.White, bold = true, lines = 1)
+                    KText(if (i == 0) "Today" else java.text.SimpleDateFormat("EEE d", java.util.Locale.getDefault()).format(java.util.Date(day)), 13, if (i == 0) Orange else Color.White, bold = true, lines = 1)
                     shows.forEach { u ->
-                        val time = java.time.Instant.ofEpochMilli(u.at).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+                        val time = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(u.at))
                         Tile(Modifier.fillMaxWidth(), focusKey = "cal:${u.media.id}:${u.episode}", radius = 10.dp, grow = 1.03f, background = Surface, onClick = { Nav.push(Route.Show(u.media.id)) }) {
                             Column {
                                 AsyncImage(u.media.banner ?: u.media.cover, null, Modifier.fillMaxWidth().height(56.dp), contentScale = ContentScale.Crop)
