@@ -1,6 +1,5 @@
 package app.kumo.tv
 
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import android.app.Application
 import android.os.Bundle
@@ -111,8 +110,8 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             withTimeoutOrNull(1500) { runCatching { Store.sync() } }
             finishAndRemoveTask()
-            delay(300)
-            android.os.Process.killProcess(android.os.Process.myPid())
+            // Not in this coroutine: closing the activity cancels it.
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 300)
         }
     }
 
