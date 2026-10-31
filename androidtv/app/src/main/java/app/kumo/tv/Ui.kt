@@ -98,6 +98,7 @@ fun Tile(
             .focusRequester(focusRequester)
             .onFocusChanged {
                 if (it.isFocused) {
+                    Sounds.moved()
                     if (focusKey != null) {
                         Nav.lastFocus = focusKey
                         android.util.Log.d("KumoKeys", "focus $focusKey")
@@ -130,6 +131,24 @@ fun Tile(
             )
             .combinedClickable(interactionSource = source, indication = null, onLongClick = onLongClick, onClick = onClick),
     ) { content(focused) }
+}
+
+/** A soft tick when an arrow press moves focus. Silent in the player and for focus the app moves itself. */
+object Sounds {
+    private var pool: android.media.SoundPool? = null
+    private var tick = 0
+
+    fun load(context: Context) {
+        val attributes = android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
+        pool = android.media.SoundPool.Builder().setMaxStreams(2).setAudioAttributes(attributes).build().also { tick = it.load(context, R.raw.tick, 1) }
+    }
+
+    fun moved() {
+        val now = System.currentTimeMillis()
+        if (now - Nav.moveAt > 400) return
+        Nav.moveAt = 0
+        if (Store.menuSound && Nav.stack.last() !is Route.Player) pool?.play(tick, 0.35f, 0.35f, 1, 0, 1f)
+    }
 }
 
 /** Remotes differ in what they send while OK is held, so a timer decides what a hold is. */
@@ -168,7 +187,7 @@ fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
             background = Surface,
             onFocused = { item.hero?.let { HomeData.heroTarget = it } },
             onLongClick = { posterMenu(context, item) },
-            onClick = { if (item.ep != null) Nav.push(Route.Watch(item.id, item.ep, false)) else Nav.push(Route.Show(item.id)) },
+            onClick = { Nav.push(Route.Show(item.id, item.ep, choose = item.ep != null)) },
         ) {
             if (item.image != null) AsyncImage(item.image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else KText(item.title, 13, bold = true, modifier = Modifier.padding(8.dp))

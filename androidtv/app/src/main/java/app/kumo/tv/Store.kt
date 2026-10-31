@@ -42,6 +42,9 @@ object Store {
     var autoSkip: Boolean
         get() = sp.getBoolean("autoSkip", false)
         set(v) { sp.edit().putBoolean("autoSkip", v).apply(); version++ }
+    var menuSound: Boolean
+        get() = sp.getBoolean("menuSound", true)
+        set(v) { sp.edit().putBoolean("menuSound", v).apply(); version++ }
     var prefer: Audio
         get() = if (sp.getString("audio", "sub") == "dub") Audio.DUB else Audio.SUB
         set(v) { sp.edit().putString("audio", if (v == Audio.DUB) "dub" else "sub").apply(); version++ }

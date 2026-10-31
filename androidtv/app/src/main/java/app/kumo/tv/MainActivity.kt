@@ -40,7 +40,7 @@ class KumoApp : Application(), ImageLoaderFactory {
 
 sealed class Route {
     data object Tabs : Route()
-    data class Show(val id: Int, val ep: Int? = null) : Route()
+    data class Show(val id: Int, val ep: Int? = null, val choose: Boolean = false) : Route()
     data class Watch(val id: Int, val ep: Int, val auto: Boolean) : Route()
     data class Player(val session: PlaySession) : Route()
     data object Addons : Route()
@@ -52,6 +52,7 @@ object Nav {
     var lastFocus: String? = null
     var restore by mutableStateOf<String?>("home:first")
     var lastKey = 0
+    var moveAt = 0L
 
     fun push(r: Route) { saved.add(lastFocus); stack.add(r) }
     fun pop() {
@@ -66,13 +67,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         addFromIntent(intent)
+        Sounds.load(this)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Orange, background = Color.Black)) {
                 Box(Modifier.fillMaxSize().background(Color.Black)) {
                     BackHandler(Nav.stack.size > 1) { Nav.pop() }
                     when (val r = Nav.stack.last()) {
                         Route.Tabs -> TabsScreen()
-                        is Route.Show -> ShowScreen(r.id, r.ep)
+                        is Route.Show -> ShowScreen(r.id, r.ep, r.choose)
                         is Route.Watch -> WatchScreen(r)
                         is Route.Player -> PlayerScreen(r.session)
                         Route.Addons -> AddonsScreen()
@@ -91,6 +93,7 @@ class MainActivity : ComponentActivity() {
             if (event.repeatCount == 0) android.util.Log.d("KumoKeys", "press ${android.view.KeyEvent.keyCodeToString(event.keyCode)} device ${event.deviceId} on ${Nav.stack.last()::class.simpleName} at ${Nav.lastFocus} tab ${HomeData.tab}")
             Nav.restore = null
             Nav.lastKey = event.keyCode
+            if (event.keyCode in android.view.KeyEvent.KEYCODE_DPAD_UP..android.view.KeyEvent.KEYCODE_DPAD_RIGHT) Nav.moveAt = System.currentTimeMillis()
         }
         return super.dispatchKeyEvent(event)
     }

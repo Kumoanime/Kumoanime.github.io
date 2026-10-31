@@ -292,18 +292,21 @@ fun TabsScreen() {
 }
 
 /** The small panel under the bell and account buttons. Arrow keys stay inside it. */
+/** Arrow keys can't leave this group, but the app can still move focus out of it. */
 @OptIn(ExperimentalComposeUiApi::class)
+private fun arrowsStayInside() = Modifier.focusProperties {
+    exit = { d ->
+        if (d == FocusDirection.Left || d == FocusDirection.Right || d == FocusDirection.Up || d == FocusDirection.Down) FocusRequester.Cancel
+        else FocusRequester.Default
+    }
+}.focusGroup()
+
 @Composable
 private fun BoxScope.TopPanel(first: FocusRequester, width: Dp, content: @Composable ColumnScope.() -> Unit) {
     LaunchedEffect(Unit) { withFrameNanos { }; runCatching { first.requestFocus() } }
     Column(
         Modifier.align(Alignment.TopEnd).padding(top = 68.dp, end = 24.dp).width(width)
-            .focusProperties {
-                exit = { d ->
-                    if (d == FocusDirection.Left || d == FocusDirection.Right || d == FocusDirection.Up || d == FocusDirection.Down) FocusRequester.Cancel
-                    else FocusRequester.Default
-                }
-            }.focusGroup()
+            .then(arrowsStayInside())
             .background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
         content = content,
@@ -601,6 +604,7 @@ fun SettingsScreen() {
             Toggle("Auto Next", Store.autoNext, "set:next") { Store.autoNext = !Store.autoNext }
             Toggle("Auto Skip", Store.autoSkip, "set:skip") { Store.autoSkip = !Store.autoSkip }
             Toggle(if (Store.prefer == Audio.DUB) "Audio: Dub" else "Audio: Sub", true, "set:audio") { Store.prefer = if (Store.prefer == Audio.DUB) Audio.SUB else Audio.DUB }
+            Toggle("Menu sound", Store.menuSound, "set:sound") { Store.menuSound = !Store.menuSound }
         }
         KText("Add-ons and devices", 15, Muted, bold = true, modifier = Modifier.padding(top = 18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -622,28 +626,12 @@ private fun Backdrop(image: String?, strength: Float) {
 }
 
 @Composable
-private fun SourceColumn(title: String, list: List<StreamRow>, state: LazyListState, keyOf: (StreamRow) -> String, modifier: Modifier, onPick: (StreamRow) -> Unit) {
-    Column(modifier) {
-        KText("$title  ·  ${list.size}", 16, Orange, bold = true, modifier = Modifier.padding(start = 6.dp, bottom = 6.dp))
-        LazyColumn(state = state, verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(6.dp)) {
-            items(list, key = { it.index }) { row ->
-                Tile(Modifier.fillMaxWidth(), focusKey = keyOf(row), radius = 8.dp, grow = 1.02f, background = Surface, onClick = { onPick(row) }) {
-                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        KText(row.stream.label, 13, bold = true, lines = 1)
-                        KText(row.stream.detail.ifEmpty { row.addon.name }, 11, Muted, lines = 3)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun ShowScreen(id: Int, ep: Int? = null) {
+fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
     val context = LocalContext.current
     var media by remember { mutableStateOf<Media?>(null) }
     var failed by remember { mutableStateOf(false) }
     var marking by remember { mutableStateOf(false) }
+    var choosing by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(id) { runCatching { media = AniList.media(id) }.onFailure { failed = true } }
     val m = media ?: run { Centered(if (failed) "Couldn't load this show." else "Loading…"); return }
     val v = Store.version
@@ -655,7 +643,8 @@ fun ShowScreen(id: Int, ep: Int? = null) {
             // Opened from the bell: start on the new episode, however far down it is.
             episodes.scrollToItem(ep - 1)
             withFrameNanos { }
-            Nav.restore = "ep:$ep"
+            Nav.restore = if (m.isMovie) "show:play" else "ep:$ep"
+            if (choose) { withFrameNanos { }; withFrameNanos { }; choosing = ep }
         } else if (Nav.restore == null) Nav.restore = "show:play"
     }
     Box(Modifier.fillMaxSize()) {
@@ -668,10 +657,11 @@ fun ShowScreen(id: Int, ep: Int? = null) {
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (count > 0) KButton(if (m.isMovie) "Play" else "Play episode $next", focusKey = "show:play", solid = true) { Nav.push(Route.Watch(m.id, next, false)) }
+                    if (count > 0) KButton(if (m.isMovie) "Play" else "Play episode $next", focusKey = "show:play", solid = true) { LastFailure.message = null; choosing = next }
                     KButton(if (Store.inWatchlist(m.route)) "✓ Watching" else "+ Watching", focusKey = "show:list") { Store.toggleWatch(m.route, m.title, m.cover) }
                     if (!m.isMovie && count > 0) KButton(if (marking) "Done marking" else "Mark watched") { marking = !marking }
                 }
+                LastFailure.message?.let { KText(it, 13, Orange, modifier = Modifier.padding(top = 10.dp)) }
                 if (marking) KText("Press OK on an episode to mark it watched or unwatched.", 13, Orange, modifier = Modifier.padding(top = 10.dp))
                 if (!m.isMovie) {
                     if (count == 0) KText("No episodes have aired yet.", 14, Muted, modifier = Modifier.padding(top = 16.dp))
@@ -681,7 +671,7 @@ fun ShowScreen(id: Int, ep: Int? = null) {
                             val seen = pct > 0.92f
                             Tile(Modifier.height(44.dp), focusKey = "ep:$n", radius = 12.dp, outline = false, background = if (seen) Color(0x33FF8A1F) else Surface, focusedBackground = Color.White, onClick = {
                                 if (marking) Store.markWatched(m.route, n, !seen, m.title, m.cover)
-                                else Nav.push(Route.Watch(m.id, n, false))
+                                else { LastFailure.message = null; choosing = n }
                             }) { f ->
                                 KText((if (seen) "✓ " else "") + n, 14, if (f) Color.Black else if (seen) Orange else Color.White, bold = true, modifier = Modifier.align(Alignment.Center))
                                 if (pct > 0f && !seen) Bar(pct, Modifier.align(Alignment.BottomStart))
@@ -691,113 +681,132 @@ fun ShowScreen(id: Int, ep: Int? = null) {
                 }
             }
         }
+        choosing?.let { n ->
+            EpisodeDock(m, n) {
+                Nav.restore = if (m.isMovie) "show:play" else "ep:$n"
+                choosing = null
+            }
+        }
     }
 }
 
 object LastFailure { var message by mutableStateOf<String?>(null) }
 
+/** Sources for one episode, kept out of sight. */
+private class EpisodeSources {
+    var media by mutableStateOf<Media?>(null)
+    val rows = mutableStateListOf<StreamRow>()
+    var subtitles = emptyList<Subtitle>()
+    var ids: ShowIds? = null
+    var done by mutableStateOf(false)
+    var failed by mutableStateOf(false)
+
+    /** Sources of this type, the best first and those naming this episode ahead of the rest. */
+    fun best(kind: Audio, ep: Int): List<StreamRow> {
+        val mine = rows.filter { it.audio == kind }
+        val named = Regex("(?:E|[ ._-])0*$ep(?:[ ._)\\[(-]|v\\d|$)", RegexOption.IGNORE_CASE)
+        return StreamLogic.autoCandidates(mine, kind).sortedByDescending { named.containsMatchIn("${it.stream.title ?: ""} ${it.stream.filename ?: ""} ${it.stream.description ?: ""}") }
+    }
+
+    fun play(ep: Int, list: List<StreamRow>) {
+        val m = media ?: return
+        val i = ids ?: return
+        Nav.push(Route.Player(PlaySession(m, ep, list, subtitles, i)))
+    }
+
+    /** Waits for every add-on, or 4 seconds if a cached source of this type is already here. */
+    suspend fun ready(kind: Audio) {
+        val began = System.currentTimeMillis()
+        while (!done && !(rows.any { it.audio == kind && StreamLogic.isCached(it.stream) } && System.currentTimeMillis() - began > 4000)) delay(200)
+    }
+}
+
+@Composable
+private fun rememberSources(id: Int, ep: Int): EpisodeSources {
+    val sources = remember(id, ep) { EpisodeSources() }
+    LaunchedEffect(sources) {
+        val m = runCatching { AniList.media(id) }.getOrNull()
+        if (m == null) { sources.failed = true; sources.done = true; return@LaunchedEffect }
+        sources.media = m
+        val ids = AniList.showIds(m)
+        sources.ids = ids
+        launch { sources.subtitles = Addons.subtitles(Store.addons, ids, ep, m.isMovie) }
+        Addons.streams(Store.addons, ids, ep, m.isMovie).collect { (addon, list) ->
+            list.forEach { s -> sources.rows.add(StreamRow(addon, s, StreamLogic.audio(s), sources.rows.size)) }
+        }
+        sources.done = true
+    }
+    return sources
+}
+
+/** The Sub, Dub or Other last chosen, which the next episode uses too. */
+private var lastKind: Audio? = null
+
+/** Pick a type and the best source of it plays. */
+@Composable
+private fun BoxScope.EpisodeDock(m: Media, ep: Int, onClose: () -> Unit) {
+    val sources = rememberSources(m.id, ep)
+    var chosen by remember { mutableStateOf<Audio?>(null) }
+    val kinds = listOf(Audio.SUB to "Sub", Audio.DUB to "Dub", Audio.OTHER to "Other")
+    val preferred = lastKind ?: Store.prefer
+    val first = remember { FocusRequester() }
+    LaunchedEffect(Unit) { withFrameNanos { }; runCatching { first.requestFocus() } }
+    LaunchedEffect(chosen) {
+        val kind = chosen ?: return@LaunchedEffect
+        sources.ready(kind)
+        val list = sources.best(kind, ep)
+        chosen = null
+        if (list.isEmpty()) return@LaunchedEffect
+        lastKind = kind
+        Nav.lastFocus = if (m.isMovie) "show:play" else "ep:$ep"
+        sources.play(ep, list)
+    }
+    BackHandler { if (chosen != null) chosen = null else onClose() }
+    Column(
+        Modifier.align(Alignment.Center).width(320.dp).then(arrowsStayInside())
+            .background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        KText(if (m.isMovie) m.title else "Episode $ep", 16, bold = true, lines = 1, modifier = Modifier.padding(start = 8.dp, top = 2.dp))
+        KText(
+            when {
+                Store.addons.none { it.enabled } -> "Add an add-on first, in Settings."
+                sources.failed -> "Couldn't load this episode."
+                sources.done && sources.rows.isEmpty() -> "No sources found."
+                else -> chosen?.let { c -> "Starting ${kinds.first { it.first == c }.second}…" } ?: "Choose how to watch"
+            },
+            12, Muted, modifier = Modifier.padding(start = 8.dp, bottom = 4.dp),
+        )
+        kinds.forEach { (kind, name) ->
+            val count = sources.rows.count { it.audio == kind }
+            Tile(
+                Modifier.fillMaxWidth(), focusKey = "dock:$name", requester = if (kind == preferred) first else null, radius = 12.dp, grow = 1f,
+                outline = false, background = Surface, focusedBackground = Color.White,
+                onClick = { if (count > 0 || !sources.done) chosen = kind },
+            ) { f ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                    KText(name, 15, if (f) Color.Black else Color.White, bold = true, modifier = Modifier.weight(1f))
+                    KText(if (count > 0) "Ready" else if (sources.done) "None found" else "Looking…", 12, if (f) Color.DarkGray else Muted)
+                }
+            }
+        }
+    }
+}
+
+/** Loads the next episode for Auto Next, using the type chosen last. */
 @Composable
 fun WatchScreen(r: Route.Watch) {
-    var media by remember { mutableStateOf<Media?>(null) }
-    val rows = remember { mutableStateListOf<StreamRow>() }
-    var extraSubs by remember { mutableStateOf<List<Subtitle>>(emptyList()) }
-    var showIds by remember { mutableStateOf<ShowIds?>(null) }
-    var done by remember { mutableStateOf(false) }
-    var failed by remember { mutableStateOf(false) }
-    var auto by remember { mutableStateOf(r.auto) }
-    val start: (List<StreamRow>) -> Unit = { list ->
-        val m = media
-        val ids = showIds
-        if (m != null && ids != null && list.isNotEmpty()) Nav.push(Route.Player(PlaySession(m, r.ep, list, extraSubs, ids)))
-    }
-    val prefer = Store.prefer
-    LaunchedEffect(r.id, r.ep) {
+    val sources = rememberSources(r.id, r.ep)
+    val kind = lastKind ?: Store.prefer
+    LaunchedEffect(sources) {
         LastFailure.message = null
-        val m = runCatching { AniList.media(r.id) }.getOrNull()
-        if (m == null) { failed = true; return@LaunchedEffect }
-        media = m
-        val ids = AniList.showIds(m)
-        showIds = ids
-        launch { extraSubs = Addons.subtitles(Store.addons, ids, r.ep, m.isMovie) }
-        Addons.streams(Store.addons, ids, r.ep, m.isMovie).collect { (addon, list) ->
-            list.forEach { s -> rows.add(StreamRow(addon, s, StreamLogic.audio(s), rows.size)) }
-        }
-        done = true
+        sources.ready(kind)
+        val list = sources.best(kind, r.ep).ifEmpty { Audio.entries.flatMap { sources.best(it, r.ep) } }
+        if (list.isNotEmpty()) sources.play(r.ep, list)
     }
-    // Start once every add-on answered, or after 4 seconds if a cached source is already here.
-    LaunchedEffect(auto, media) {
-        if (!auto || media == null) return@LaunchedEffect
-        val began = System.currentTimeMillis()
-        while (auto) {
-            val cached = rows.any { StreamLogic.isCached(it.stream) }
-            if (rows.isNotEmpty() && (done || (cached && System.currentTimeMillis() - began > 4000))) {
-                auto = false
-                start(StreamLogic.autoCandidates(rows.toList(), prefer))
-                return@LaunchedEffect
-            }
-            if (done) return@LaunchedEffect
-            delay(200)
-        }
-    }
-    val m = media
+    val m = sources.media
     Box(Modifier.fillMaxSize()) {
         m?.let { Backdrop(it) }
-        Column(Modifier.fillMaxSize().padding(start = 32.dp, end = 32.dp, top = 24.dp)) {
-            KText(m?.title ?: "Loading…", 22, bold = true, lines = 1)
-            KText(if (m?.isMovie == true) "Movie" else "Episode ${r.ep}", 14, Muted, modifier = Modifier.padding(top = 2.dp, bottom = 12.dp))
-            LastFailure.message?.let { KText(it, 14, Orange, modifier = Modifier.padding(bottom = 10.dp)) }
-            when {
-                failed -> KText("Couldn't load this episode.", 15, Muted)
-                Store.addons.none { it.enabled } -> KText("Add an add-on first, in Settings.", 15, Muted)
-                rows.isEmpty() && done -> KText("No sources found for this episode.", 15, Muted)
-                rows.isEmpty() -> KText("Asking your add-ons…", 15, Muted)
-            }
-            val ordered = remember(rows.size, done) { StreamLogic.order(rows.toList(), prefer) }
-            val groups = remember(ordered) {
-                val other = if (ordered.any { it.audio != Audio.OTHER }) "Other" else "Sources"
-                val names = if (prefer == Audio.DUB) listOf(Audio.DUB to "DUB", Audio.SUB to "SUB", Audio.OTHER to other)
-                else listOf(Audio.SUB to "SUB", Audio.DUB to "DUB", Audio.OTHER to other)
-                names.map { (kind, name) -> name to ordered.filter { it.audio == kind } }.filter { it.second.isNotEmpty() }
-            }
-            val states = remember { List(3) { LazyListState() } }
-            val scope = rememberCoroutineScope()
-            val keyOf = { row: StreamRow -> if (row === groups.firstOrNull()?.second?.firstOrNull()) "src:first" else "src:${row.index}" }
-            // Columns scroll on their own, so Left and Right line the next column
-            // up with this one and land on the source at the same height.
-            val sideways = Modifier.onPreviewKeyEvent { e ->
-                val code = e.nativeKeyEvent.keyCode
-                val step = when (code) {
-                    android.view.KeyEvent.KEYCODE_DPAD_LEFT -> -1
-                    android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> 1
-                    else -> 0
-                }
-                val column = groups.indexOfFirst { g -> g.second.any { keyOf(it) == Nav.lastFocus } }
-                val target = column + step
-                if (step == 0 || column < 0) return@onPreviewKeyEvent false
-                if (target !in groups.indices) return@onPreviewKeyEvent target >= 0
-                if (e.type == KeyEventType.KeyDown) {
-                    val index = groups[column].second.indexOfFirst { keyOf(it) == Nav.lastFocus }
-                    val next = groups[target].second
-                    val here = states[column]
-                    scope.launch {
-                        states[target].scrollToItem(here.firstVisibleItemIndex.coerceAtMost(next.lastIndex), here.firstVisibleItemScrollOffset)
-                        withFrameNanos { }
-                        Nav.restore = keyOf(next[index.coerceAtMost(next.lastIndex)])
-                    }
-                }
-                true
-            }
-            Row(Modifier.fillMaxSize().then(sideways), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                groups.forEachIndexed { i, (name, list) ->
-                    SourceColumn(name, list, states[i], keyOf, Modifier.weight(1f).fillMaxHeight()) { row ->
-                        auto = false
-                        // If it fails, fall back to sources of the same kind first.
-                        val kind = if (row.audio == Audio.DUB) Audio.DUB else prefer
-                        start(listOf(row) + StreamLogic.autoCandidates(rows.toList(), kind).filter { it !== row })
-                    }
-                }
-            }
-        }
+        Centered(if (sources.done && sources.rows.isEmpty()) "No sources found for episode ${r.ep}." else "Loading episode ${r.ep}…")
     }
-    LaunchedEffect(rows.isNotEmpty(), auto) { if (rows.isNotEmpty() && !auto && Nav.restore == null) Nav.restore = "src:first" }
 }

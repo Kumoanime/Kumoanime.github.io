@@ -136,11 +136,12 @@ fun PlayerScreen(session: PlaySession) {
         val d = player.duration
         if (ready && d > 0) Store.saveProgress(key, player.currentPosition / 1000.0, d / 1000.0, m.route, m.title, m.cover, label)
     }
-    val leave = { save(); Nav.pop() }
+    val leave = { save(); Nav.pop(); if (Nav.stack.last() is Route.Watch) Nav.pop() }
     val goNext = {
         save()
         Nav.pop()
-        Nav.replace(Route.Watch(m.id, session.ep + 1, true))
+        val next = Route.Watch(m.id, session.ep + 1, true)
+        if (Nav.stack.last() is Route.Watch) Nav.replace(next) else Nav.push(next)
     }
     val nextSource: (String) -> Unit = { why ->
         if (index + 1 < session.candidates.size) {
@@ -148,8 +149,9 @@ fun PlayerScreen(session: PlaySession) {
             ready = false
             index += 1
         } else {
-            LastFailure.message = "$why No other source worked. Pick one below to try again."
+            LastFailure.message = "$why No other source worked. Try again, or choose Sub, Dub or Other."
             Nav.pop()
+            if (Nav.stack.last() is Route.Watch) Nav.pop()
         }
     }
     val currentNext by androidx.compose.runtime.rememberUpdatedState(nextSource)
