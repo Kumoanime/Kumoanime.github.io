@@ -85,6 +85,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * A press always beats a pending focus restore. Otherwise a restore waiting on
+     * an item that isn't on screen fires later and pulls focus away.
+     */
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+            if (event.repeatCount == 0) android.util.Log.d("KumoKeys", "press ${android.view.KeyEvent.keyCodeToString(event.keyCode)} device ${event.deviceId} on ${Nav.stack.last()::class.simpleName} at ${Nav.lastFocus} tab ${HomeData.tab}")
+            Nav.restore = null
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         addFromIntent(intent)

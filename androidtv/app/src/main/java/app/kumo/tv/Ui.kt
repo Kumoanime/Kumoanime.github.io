@@ -84,7 +84,10 @@ fun Tile(
             .focusRequester(focusRequester)
             .onFocusChanged {
                 if (it.isFocused) {
-                    if (focusKey != null) Nav.lastFocus = focusKey
+                    if (focusKey != null) {
+                        Nav.lastFocus = focusKey
+                        android.util.Log.d("KumoKeys", "focus $focusKey")
+                    }
                     onFocused?.invoke()
                 }
             }

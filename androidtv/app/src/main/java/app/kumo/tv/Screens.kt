@@ -81,7 +81,9 @@ object HomeData {
     val contentFocus = FocusRequester()
     val accountFocus = FocusRequester()
     val dockFocus = List(4) { FocusRequester() }
-    val rowFocus = HashMap<Int, FocusRequester>()
+    val rowKeys = HashMap<Int, List<String>>()
+    val rowStates = HashMap<Int, LazyListState>()
+    var moving = false
     var aired by mutableStateOf<List<AniList.Aired>>(emptyList())
     var heroTarget by mutableStateOf<Hero?>(null)
 
@@ -170,14 +172,14 @@ fun TabsScreen() {
     }
 }
 
-@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun Rail(row: Int, key: String, title: String, items: List<PosterItem>) {
     val state = HomeData.rails.getOrPut(key) { LazyListState() }
-    val focus = HomeData.rowFocus.getOrPut(row) { FocusRequester() }
+    HomeData.rowKeys[row] = items.map { it.key }
+    HomeData.rowStates[row] = state
     Column(Modifier.padding(bottom = 14.dp).onFocusChanged { if (it.hasFocus) HomeData.focusedRow = row }) {
         KText(title, 15, bold = true, modifier = Modifier.padding(start = 28.dp, bottom = 6.dp))
-        LazyRow(Modifier.focusRequester(focus).focusRestorer(), state = state, contentPadding = PaddingValues(horizontal = 28.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyRow(state = state, contentPadding = PaddingValues(horizontal = 28.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(items, key = { it.key }) { Poster(it) }
         }
     }
@@ -210,10 +212,19 @@ fun HomeScreen() {
         if (e.type == KeyEventType.KeyDown) {
             val target = HomeData.focusedRow + if (code == NativeKey.KEYCODE_DPAD_DOWN) 1 else -1
             if (target < 0) runCatching { HomeData.accountFocus.requestFocus() }
-            else if (target < rowCount) scope.launch {
-                HomeData.list.scrollToItem(target)
-                withFrameNanos { }
-                runCatching { HomeData.rowFocus[target]?.requestFocus() }
+            else if (target < rowCount && !HomeData.moving) {
+                HomeData.moving = true
+                // Land on the poster directly above or below, not a remembered one.
+                val from = HomeData.focusedRow
+                val column = (HomeData.rowKeys[from]?.indexOf(Nav.lastFocus) ?: 0).coerceAtLeast(0) - (HomeData.rowStates[from]?.firstVisibleItemIndex ?: 0)
+                scope.launch {
+                    HomeData.list.scrollToItem(target)
+                    withFrameNanos { }
+                    val keys = HomeData.rowKeys[target].orEmpty()
+                    val first = HomeData.rowStates[target]?.firstVisibleItemIndex ?: 0
+                    if (keys.isNotEmpty()) Nav.restore = keys[(first + column).coerceIn(0, keys.lastIndex)]
+                    HomeData.moving = false
+                }
             }
         }
         true
@@ -475,11 +486,14 @@ fun WatchScreen(r: Route.Watch) {
     var media by remember { mutableStateOf<Media?>(null) }
     val rows = remember { mutableStateListOf<StreamRow>() }
     var extraSubs by remember { mutableStateOf<List<Subtitle>>(emptyList()) }
+    var showIds by remember { mutableStateOf<ShowIds?>(null) }
     var done by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
     var auto by remember { mutableStateOf(r.auto) }
     val start: (List<StreamRow>) -> Unit = { list ->
-        media?.let { m -> if (list.isNotEmpty()) Nav.push(Route.Player(PlaySession(m, r.ep, list, extraSubs))) }
+        val m = media
+        val ids = showIds
+        if (m != null && ids != null && list.isNotEmpty()) Nav.push(Route.Player(PlaySession(m, r.ep, list, extraSubs, ids)))
     }
     val prefer = Store.prefer
     LaunchedEffect(r.id, r.ep) {
@@ -488,6 +502,7 @@ fun WatchScreen(r: Route.Watch) {
         if (m == null) { failed = true; return@LaunchedEffect }
         media = m
         val ids = AniList.showIds(m)
+        showIds = ids
         launch { extraSubs = Addons.subtitles(Store.addons, ids, r.ep, m.isMovie) }
         Addons.streams(Store.addons, ids, r.ep, m.isMovie).collect { (addon, list) ->
             list.forEach { s -> rows.add(StreamRow(addon, s, StreamLogic.audio(s), rows.size)) }

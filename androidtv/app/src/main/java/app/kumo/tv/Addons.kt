@@ -132,29 +132,3 @@ object StreamLogic {
         return cached.ifEmpty { ordered.filter { !isUncached(it.stream) }.ifEmpty { ordered } }
     }
 }
-
-class SkipTimes(val op: ClosedFloatingPointRange<Double>?, val ed: ClosedFloatingPointRange<Double>?)
-
-object AniSkip {
-    suspend fun fetch(mal: Int, ep: Int, durationSec: Double): SkipTimes? = runCatching {
-        val r = Net.get("https://api.aniskip.com/v2/skip-times/$mal/$ep?types[]=op&types[]=ed&episodeLength=${durationSec.toInt()}")
-        if (!r.ok) return null
-        val root = JSONObject(r.body)
-        if (!root.optBoolean("found")) return null
-        var op: ClosedFloatingPointRange<Double>? = null
-        var ed: ClosedFloatingPointRange<Double>? = null
-        root.optJSONArray("results").objects().forEach { row ->
-            val i = row.optJSONObject("interval") ?: return@forEach
-            val start = i.optDouble("startTime")
-            val end = i.optDouble("endTime")
-            if (!(end > start)) return@forEach
-            when (row.str("skipType")) {
-                "op" -> op = start..end
-                "ed" -> ed = start..end
-            }
-        }
-        SkipTimes(op, ed)
-    }.getOrNull()
-
-    fun inside(t: Double, w: ClosedFloatingPointRange<Double>?) = w != null && t >= w.start && t < w.endInclusive - 0.35
-}

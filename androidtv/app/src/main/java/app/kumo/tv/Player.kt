@@ -61,7 +61,7 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 
-class PlaySession(val media: Media, val ep: Int, val candidates: List<StreamRow>, val subtitles: List<Subtitle> = emptyList())
+class PlaySession(val media: Media, val ep: Int, val candidates: List<StreamRow>, val subtitles: List<Subtitle>, val ids: ShowIds)
 
 private fun clock(sec: Double): String {
     val s = sec.toInt().coerceAtLeast(0)
@@ -127,7 +127,6 @@ fun PlayerScreen(session: PlaySession) {
     var overlayUntil by remember { mutableStateOf(System.currentTimeMillis() + 3000) }
     var note by remember { mutableStateOf("") }
     var skips by remember { mutableStateOf<SkipTimes?>(null) }
-    var askedSkips by remember { mutableStateOf(false) }
     var opDone by remember { mutableStateOf(false) }
     var edDone by remember { mutableStateOf(false) }
     var countdown by remember { mutableIntStateOf(-1) }
@@ -209,20 +208,29 @@ fun PlayerScreen(session: PlaySession) {
             time = player.currentPosition / 1000.0
             duration = player.duration.takeIf { it > 0 }?.div(1000.0) ?: 0.0
             if (++tick % 20 == 0) save()
-            val mal = m.idMal
-            if (ready && !askedSkips && duration > 1 && mal != null && !m.isMovie) {
-                askedSkips = true
-                skips = AniSkip.fetch(mal, session.ep, duration)
-            }
             val s = skips
             if (Store.autoSkip && s != null) {
-                if (!opDone && AniSkip.inside(time, s.op)) { opDone = true; player.seekTo((s.op!!.endInclusive * 1000).toLong()) }
-                if (!edDone && AniSkip.inside(time, s.ed)) { edDone = true; player.seekTo((s.ed!!.endInclusive * 1000).toLong()) }
+                if (!opDone && SkipSources.inside(time, s.op)) { opDone = true; player.seekTo((s.op!!.endInclusive * 1000).toLong()) }
+                if (!edDone && SkipSources.inside(time, s.ed)) { edDone = true; player.seekTo((s.ed!!.endInclusive * 1000).toLong()) }
             }
             val nearEnd = duration > 30 && duration - time <= 12
             if (hasNext && Store.autoNext && !nextCancelled && countdown < 0 && (nearEnd || ended)) countdown = 8
             if (!hasNext && ended) { leave(); break }
             if (ended && (!Store.autoNext || nextCancelled)) { leave(); break }
+        }
+    }
+    // Skip times are looked up fresh on every play. While any are missing, check
+    // again every two minutes in case someone submits them.
+    LaunchedEffect(ready) {
+        if (!ready || m.isMovie) return@LaunchedEffect
+        while (true) {
+            val d = player.duration / 1000.0
+            if (d > 1) {
+                val found = SkipSources.find(session.ids, session.ep, d)
+                if (found.op != null || found.ed != null) skips = found
+                if (found.op != null && found.ed != null) break
+            }
+            delay(120_000)
         }
     }
     LaunchedEffect(countdown > 0) {
@@ -234,8 +242,8 @@ fun PlayerScreen(session: PlaySession) {
     }
 
     val s = skips
-    val inOp = !opDone && AniSkip.inside(time, s?.op)
-    val inEd = !edDone && AniSkip.inside(time, s?.ed)
+    val inOp = !opDone && SkipSources.inside(time, s?.op)
+    val inEd = !edDone && SkipSources.inside(time, s?.ed)
     val poke = { overlayUntil = System.currentTimeMillis() + 3500 }
 
     BackHandler {
