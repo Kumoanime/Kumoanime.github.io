@@ -128,7 +128,6 @@ fun PlayerScreen(session: PlaySession) {
     var paused by remember { mutableStateOf(false) }
     var buffering by remember { mutableStateOf(true) }
     var overlayUntil by remember { mutableStateOf(System.currentTimeMillis() + 3000) }
-    var note by remember { mutableStateOf("") }
     var skips by remember { mutableStateOf<SkipTimes?>(null) }
     var opDone by remember { mutableStateOf(false) }
     var edDone by remember { mutableStateOf(false) }
@@ -150,7 +149,6 @@ fun PlayerScreen(session: PlaySession) {
     }
     val nextSource: (String) -> Unit = { why ->
         if (index + 1 < session.candidates.size) {
-            note = "$why Trying another source…"
             ready = false
             index += 1
         } else {
@@ -171,7 +169,6 @@ fun PlayerScreen(session: PlaySession) {
                     // Debrid add-ons answer a blocked file with a short error clip.
                     if (row != null && StreamLogic.isDebrid(row.stream) && d in 1..39_999) { currentNext("That file is blocked."); return }
                     ready = true
-                    note = ""
                 }
                 if (state == Player.STATE_ENDED) ended = true
             }
@@ -332,11 +329,7 @@ fun PlayerScreen(session: PlaySession) {
         val controls = ready && (paused || System.currentTimeMillis() < overlayUntil)
         if (ready && paused) Box(Modifier.fillMaxSize().background(Color(0x99000000)))
         if (!ready) {
-            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(Modifier.size(40.dp), color = Orange, strokeWidth = 3.dp)
-                KText(if (note.isEmpty()) m.title else note, 16, bold = true, modifier = Modifier.padding(top = 16.dp))
-                KText(session.candidates.getOrNull(index)?.stream?.label ?: "", 12, Muted, lines = 1)
-            }
+            CircularProgressIndicator(Modifier.align(Alignment.Center).size(40.dp), color = Orange, strokeWidth = 3.dp)
         } else if (buffering) {
             CircularProgressIndicator(Modifier.align(Alignment.Center).size(40.dp), color = Color.White, strokeWidth = 3.dp)
         } else if (paused) {
