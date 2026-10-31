@@ -183,7 +183,7 @@ fun TabsScreen() {
 
 /** Lazy grids swallow Left on their first column, so it points at the dock here. */
 private fun leftEdge(state: LazyGridState, index: Int) = Modifier.focusProperties {
-    if (index % state.layoutInfo.maxSpan.coerceAtLeast(1) == 0) left = HomeData.dockFocus[HomeData.tab]
+    if (state.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.column == 0) left = HomeData.dockFocus[HomeData.tab]
 }
 
 @Composable
