@@ -1,5 +1,7 @@
 package app.kumo.tv
 
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -373,7 +375,8 @@ private fun HomeBackdrop() {
 @Composable
 private fun HeroText() {
     val shown = rememberShownHero()
-    Column(Modifier.fillMaxWidth(0.62f).height(196.dp).padding(start = 28.dp, top = 26.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+    Column(Modifier.fillMaxWidth(0.62f).height(214.dp).padding(start = 28.dp, top = 16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Image(painterResource(R.drawable.logo), "Kumo", Modifier.height(28.dp))
         Crossfade(shown, animationSpec = tween(200), label = "hero") { hero ->
             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 hero?.let {
