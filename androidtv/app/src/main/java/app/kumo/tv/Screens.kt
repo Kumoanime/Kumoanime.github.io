@@ -292,6 +292,7 @@ fun TabsScreen() {
 }
 
 /** The small panel under the bell and account buttons. Arrow keys stay inside it. */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun BoxScope.TopPanel(first: FocusRequester, width: Dp, content: @Composable ColumnScope.() -> Unit) {
     LaunchedEffect(Unit) { withFrameNanos { }; runCatching { first.requestFocus() } }
