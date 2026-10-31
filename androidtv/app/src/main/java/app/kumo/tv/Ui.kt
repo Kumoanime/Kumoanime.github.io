@@ -189,8 +189,8 @@ fun pick(context: Context, title: String, items: List<String>, onPick: (Int) -> 
 }
 
 @Composable
-fun Toggle(label: String, on: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Tile(modifier, radius = 22.dp, grow = 1.04f, outline = false, background = Raise, focusedBackground = Color.White, onClick = onClick) { f ->
+fun Toggle(label: String, on: Boolean, focusKey: String? = null, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Tile(modifier, focusKey = focusKey, radius = 22.dp, grow = 1.04f, outline = false, background = Raise, focusedBackground = Color.White, onClick = onClick) { f ->
         Row(Modifier.padding(horizontal = 16.dp, vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             KText(label, 14, if (f) Color.Black else Color.White, bold = true)
             Box(Modifier.size(28.dp, 16.dp).clip(RoundedCornerShape(8.dp)).background(if (on) Orange else Color(0x66808088)), contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart) {

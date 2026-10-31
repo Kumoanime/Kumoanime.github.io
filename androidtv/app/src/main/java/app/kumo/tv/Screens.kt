@@ -111,6 +111,7 @@ fun TabsScreen() {
     var open by remember { mutableStateOf(false) }
     val content = HomeData.contentFocus
     val dock = HomeData.dockFocus
+    val scope = rememberCoroutineScope()
     Box(Modifier.fillMaxSize()) {
         // The dock floats over the page, so only Left and Up leave the page,
         // always for the current tab or the account button. Right and Down stop
@@ -147,7 +148,12 @@ fun TabsScreen() {
         ) {
             Tabs.forEachIndexed { i, (name, icon) ->
                 val selected = HomeData.tab == i
-                Tile(Modifier.fillMaxWidth(), focusKey = "tab:$i", requester = dock[i], radius = 22.dp, grow = 1f, outline = false, focusedBackground = Color.White, onFocused = { HomeData.tab = i }, onClick = { runCatching { content.requestFocus() } }) { f ->
+                Tile(Modifier.fillMaxWidth(), focusKey = "tab:$i", requester = dock[i], radius = 22.dp, grow = 1f, outline = false, focusedBackground = Color.White, onFocused = {
+                    // OK never moves into the dock, so if the pressed item vanished
+                    // focus stays on this page instead of switching tab.
+                    if (Nav.lastKey == NativeKey.KEYCODE_DPAD_CENTER || Nav.lastKey == NativeKey.KEYCODE_ENTER) scope.launch { runCatching { content.requestFocus() } }
+                    else HomeData.tab = i
+                }, onClick = { runCatching { content.requestFocus() } }) { f ->
                     val tint = if (f) Color.Black else if (selected) Orange else Muted
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(icon, name, Modifier.size(20.dp), tint = tint)
@@ -351,17 +357,15 @@ fun AddonsScreen() {
 
 @Composable
 fun SettingsScreen() {
-    val version = Store.version
+    Store.version  // Redraws the toggles when a setting changes.
     val addonCount = Store.addonVersion.let { Store.addons.size }
     Column(Modifier.fillMaxSize().padding(start = 40.dp, end = 80.dp, top = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         KText("Settings", 26, bold = true)
         KText("Playback", 15, Muted, bold = true, modifier = Modifier.padding(top = 14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            key(version) {
-                Toggle("Auto Next", Store.autoNext) { Store.autoNext = !Store.autoNext }
-                Toggle("Auto Skip", Store.autoSkip) { Store.autoSkip = !Store.autoSkip }
-                Toggle(if (Store.prefer == Audio.DUB) "Audio: Dub" else "Audio: Sub", true) { Store.prefer = if (Store.prefer == Audio.DUB) Audio.SUB else Audio.DUB }
-            }
+            Toggle("Auto Next", Store.autoNext, "set:next") { Store.autoNext = !Store.autoNext }
+            Toggle("Auto Skip", Store.autoSkip, "set:skip") { Store.autoSkip = !Store.autoSkip }
+            Toggle(if (Store.prefer == Audio.DUB) "Audio: Dub" else "Audio: Sub", true, "set:audio") { Store.prefer = if (Store.prefer == Audio.DUB) Audio.SUB else Audio.DUB }
         }
         KText("Add-ons and devices", 15, Muted, bold = true, modifier = Modifier.padding(top = 18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

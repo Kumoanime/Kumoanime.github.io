@@ -53,6 +53,7 @@ object Nav {
     private val saved = ArrayList<String?>()
     var lastFocus: String? = null
     var restore by mutableStateOf<String?>("home:first")
+    var lastKey = 0
 
     fun push(r: Route) { saved.add(lastFocus); stack.add(r) }
     fun pop() {
@@ -93,6 +94,7 @@ class MainActivity : ComponentActivity() {
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
             if (event.repeatCount == 0) android.util.Log.d("KumoKeys", "press ${android.view.KeyEvent.keyCodeToString(event.keyCode)} device ${event.deviceId} on ${Nav.stack.last()::class.simpleName} at ${Nav.lastFocus} tab ${HomeData.tab}")
             Nav.restore = null
+            Nav.lastKey = event.keyCode
         }
         return super.dispatchKeyEvent(event)
     }
