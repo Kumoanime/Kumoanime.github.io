@@ -73,7 +73,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(primary = Orange, background = Color.Black)) {
                 Box(Modifier.fillMaxSize().background(Color.Black)) {
                     BackHandler(Nav.stack.size > 1) { Nav.pop() }
-                    when (val r = Nav.stack.last()) {
+                    if (Splash.showApp) when (val r = Nav.stack.last()) {
                         Route.Tabs -> TabsScreen()
                         is Route.Show -> ShowScreen(r.id, r.ep, r.choose)
                         is Route.Watch -> WatchScreen(r)
