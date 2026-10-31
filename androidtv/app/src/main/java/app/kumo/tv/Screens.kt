@@ -69,6 +69,7 @@ object HomeData {
     var tab by mutableIntStateOf(0)
     var focusedRow = 0
     val rowFocus = HashMap<Int, FocusRequester>()
+    var aired by mutableStateOf<List<AniList.Aired>>(emptyList())
 
     suspend fun load() {
         if (rows.isNotEmpty()) return
@@ -135,10 +136,18 @@ fun HomeScreen() {
     LaunchedEffect(Unit) { HomeData.load() }
     val v = Store.version
     val cont = remember(v) { Store.continueRows() }
+    val watchIds = remember(v) { Store.watchingItems().mapNotNull { routeId(it.optString("route")) } }
+    LaunchedEffect(watchIds) { runCatching { HomeData.aired = AniList.recentlyAired(watchIds) } }
+    // The newest unwatched episode of each show in Watching.
+    val fresh = remember(v, HomeData.aired) {
+        HomeData.aired.filter { Store.percent(it.media.route, it.episode) <= 0.92f }.distinctBy { it.media.id }
+    }
     if (HomeData.rows.isEmpty()) { Centered(if (HomeData.error) "Couldn't reach AniList. Check the connection." else "Loading…"); return }
     val firstKey = if (cont.isNotEmpty()) "continue:${cont[0].route}" else "home:first"
     LaunchedEffect(firstKey) { if (Nav.restore == "home:first") Nav.restore = firstKey }
-    val rowCount = HomeData.rows.size + if (cont.isNotEmpty()) 1 else 0
+    val freshRow = if (cont.isNotEmpty()) 1 else 0
+    val firstListRow = freshRow + if (fresh.isNotEmpty()) 1 else 0
+    val rowCount = HomeData.rows.size + firstListRow
     val scope = rememberCoroutineScope()
     // Row-to-row movement is handled here: left to itself, focus can leave the
     // list for the side menu when the next row isn't laid out yet.
@@ -164,8 +173,13 @@ fun HomeScreen() {
                 })
             })
         }
+        if (fresh.isNotEmpty()) item(key = "fresh") {
+            Rail(freshRow, "fresh", "New episodes", fresh.map { a ->
+                PosterItem("fresh:${a.media.id}", a.media.id, a.media.title, a.media.cover, "Episode ${a.episode}", ep = a.episode)
+            })
+        }
         itemsIndexed(HomeData.rows, key = { _, r -> r.key }) { i, r ->
-            Rail(i + if (cont.isNotEmpty()) 1 else 0, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
+            Rail(i + firstListRow, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
         }
     }
 }
@@ -235,8 +249,12 @@ fun AddonsScreen() {
         items(list, key = { it.url }) { a ->
             Tile(Modifier.fillMaxWidth(), radius = 8.dp, grow = 1.01f, background = Surface, onClick = {
                 pick(context, a.name, listOf(if (a.enabled) "Turn off" else "Turn on", "Remove")) { i ->
-                    if (i == 0) a.enabled = !a.enabled else Store.addons.remove(a)
-                    Store.saveAddons()
+                    if (i == 0) { a.enabled = !a.enabled; Store.saveAddons() }
+                    else {
+                        // Move focus first, or it falls back to the side menu and changes tab.
+                        Nav.restore = "addons:add"
+                        scope.launch { withFrameNanos { }; withFrameNanos { }; Store.addons.remove(a); Store.saveAddons() }
+                    }
                 }
             }) {
                 Column(Modifier.padding(14.dp)) {
@@ -341,11 +359,12 @@ object LastFailure { var message by mutableStateOf<String?>(null) }
 fun WatchScreen(r: Route.Watch) {
     var media by remember { mutableStateOf<Media?>(null) }
     val rows = remember { mutableStateListOf<StreamRow>() }
+    var extraSubs by remember { mutableStateOf<List<Subtitle>>(emptyList()) }
     var done by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
     var auto by remember { mutableStateOf(r.auto) }
     val start: (List<StreamRow>) -> Unit = { list ->
-        media?.let { m -> if (list.isNotEmpty()) Nav.push(Route.Player(PlaySession(m, r.ep, list))) }
+        media?.let { m -> if (list.isNotEmpty()) Nav.push(Route.Player(PlaySession(m, r.ep, list, extraSubs))) }
     }
     val prefer = Store.prefer
     LaunchedEffect(r.id, r.ep) {
@@ -354,6 +373,7 @@ fun WatchScreen(r: Route.Watch) {
         if (m == null) { failed = true; return@LaunchedEffect }
         media = m
         val ids = AniList.showIds(m)
+        launch { extraSubs = Addons.subtitles(Store.addons, ids, r.ep, m.isMovie) }
         Addons.streams(Store.addons, ids, r.ep, m.isMovie).collect { (addon, list) ->
             list.forEach { s -> rows.add(StreamRow(addon, s, StreamLogic.audio(s), rows.size)) }
         }

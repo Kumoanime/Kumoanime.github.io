@@ -51,7 +51,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 
-class PlaySession(val media: Media, val ep: Int, val candidates: List<StreamRow>)
+class PlaySession(val media: Media, val ep: Int, val candidates: List<StreamRow>, val subtitles: List<Subtitle> = emptyList())
 
 private fun clock(sec: Double): String {
     val s = sec.toInt().coerceAtLeast(0)
@@ -79,15 +79,15 @@ private fun buildPlayer(context: android.content.Context): ExoPlayer {
 }
 
 @OptIn(UnstableApi::class)
-private fun itemFor(s: Stream, id: String): MediaItem {
+private fun itemFor(s: Stream, id: String, extra: List<Subtitle>): MediaItem {
     val url = s.url ?: ""
     val b = MediaItem.Builder().setUri(url).setMediaId(id)
     if (url.substringBefore('?').lowercase().endsWith(".m3u8")) b.setMimeType(MimeTypes.APPLICATION_M3U8)
-    val subs = s.subtitles.take(20).map { sub ->
-        val path = sub.url.substringBefore('?').lowercase()
+    val subs = (s.subtitles + extra).distinctBy { it.url }.take(20).map { sub ->
+        val path = sub.url.lowercase()
         val mime = when {
-            path.endsWith(".vtt") -> MimeTypes.TEXT_VTT
-            path.endsWith(".ass") || path.endsWith(".ssa") -> MimeTypes.TEXT_SSA
+            path.contains(".vtt") || path.contains("format=vtt") -> MimeTypes.TEXT_VTT
+            path.contains(".ass") || path.contains(".ssa") -> MimeTypes.TEXT_SSA
             else -> MimeTypes.APPLICATION_SUBRIP
         }
         MediaItem.SubtitleConfiguration.Builder(Uri.parse(sub.url)).setMimeType(mime).setLanguage(sub.lang.ifEmpty { null }).setLabel(sub.lang.ifEmpty { "Subtitles" }).build()
@@ -184,7 +184,7 @@ fun PlayerScreen(session: PlaySession) {
         val t = saved?.optDouble("t", 0.0) ?: 0.0
         val d = saved?.optDouble("d", 0.0) ?: 0.0
         val startMs = if (t > 0 && d > 0 && t / d < 0.92) (t * 1000).toLong() else 0L
-        player.setMediaItem(itemFor(row.stream, key), startMs)
+        player.setMediaItem(itemFor(row.stream, key, session.subtitles), startMs)
         player.playWhenReady = true
         player.prepare()
         delay(30_000)

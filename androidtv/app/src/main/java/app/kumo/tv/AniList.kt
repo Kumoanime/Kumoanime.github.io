@@ -33,6 +33,20 @@ object AniList {
         return Media.parse(o).also { cache[id] = it }
     }
 
+    class Aired(val media: Media, val episode: Int)
+
+    /** Episodes of these shows that aired in the last two weeks, newest first. */
+    suspend fun recentlyAired(ids: List<Int>): List<Aired> {
+        if (ids.isEmpty()) return emptyList()
+        val q = "query(\$ids:[Int],\$from:Int,\$to:Int){Page(perPage:50){airingSchedules(mediaId_in:\$ids,airingAt_greater:\$from,airingAt_lesser:\$to,sort:TIME_DESC){episode media{$FIELDS}}}}"
+        val now = (System.currentTimeMillis() / 1000).toInt()
+        val v = JSONObject().put("ids", JSONArray(ids)).put("from", now - 14 * 86400).put("to", now)
+        return graph(q, v).optJSONObject("Page")?.optJSONArray("airingSchedules").objects().mapNotNull { row ->
+            val m = row.optJSONObject("media") ?: return@mapNotNull null
+            Aired(Media.parse(m), row.int("episode") ?: return@mapNotNull null)
+        }
+    }
+
     suspend fun showIds(m: Media): ShowIds {
         val ids = ShowIds(anilist = m.id, mal = m.idMal)
         runCatching {

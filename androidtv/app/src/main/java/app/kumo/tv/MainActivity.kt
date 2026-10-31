@@ -11,7 +11,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.lifecycleScope
@@ -46,7 +49,7 @@ object Nav {
     val stack = mutableStateListOf<Route>(Route.Tabs)
     private val saved = ArrayList<String?>()
     var lastFocus: String? = null
-    var restore: String? = "home:first"
+    var restore by mutableStateOf<String?>("home:first")
 
     fun push(r: Route) { saved.add(lastFocus); stack.add(r) }
     fun pop() {

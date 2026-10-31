@@ -68,8 +68,9 @@ fun Tile(
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
     val requester = remember { FocusRequester() }
-    LaunchedEffect(focusKey) {
-        if (focusKey != null && Nav.restore == focusKey) {
+    val wanted = Nav.restore
+    LaunchedEffect(focusKey, wanted) {
+        if (focusKey != null && wanted == focusKey) {
             Nav.restore = null
             runCatching { requester.requestFocus() }
         }

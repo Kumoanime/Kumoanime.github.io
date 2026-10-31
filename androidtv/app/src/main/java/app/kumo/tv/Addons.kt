@@ -59,6 +59,24 @@ object Addons {
         return emptyList()
     }
 
+    /** Subtitles from every subtitle add-on, English first. */
+    suspend fun subtitles(addons: List<Addon>, ids: ShowIds, ep: Int, movie: Boolean): List<Subtitle> = coroutineScope {
+        addons.filter { it.enabled && it.spec("subtitles") != null }.map { a ->
+            async {
+                val spec = a.spec("subtitles") ?: return@async emptyList()
+                val c = candidates(ids, ep, movie).firstOrNull { a.handles("subtitles", it.id) } ?: return@async emptyList()
+                val type = if (movie) "movie" else if (c.anime && "anime" in spec.first) "anime" else "series"
+                val r = runCatching { Net.get(resourceUrl(a.url, "subtitles/${enc(type)}/${enc(c.id)}.json")) }.getOrNull()
+                if (r == null || !r.ok) return@async emptyList()
+                runCatching {
+                    JSONObject(r.body).optJSONArray("subtitles").objects().mapNotNull { s ->
+                        s.str("url")?.let { Subtitle(it, s.str("lang") ?: "") }
+                    }
+                }.getOrDefault(emptyList())
+            }
+        }.flatMap { it.await() }.sortedBy { if (it.lang.lowercase().startsWith("en")) 0 else 1 }
+    }
+
     /** Emits each add-on's playable sources as soon as it answers. */
     fun streams(addons: List<Addon>, ids: ShowIds, ep: Int, movie: Boolean): Flow<Pair<Addon, List<Stream>>> = channelFlow {
         coroutineScope {
