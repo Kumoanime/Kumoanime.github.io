@@ -1,0 +1,142 @@
+package app.kumo.tv
+
+import android.net.Uri
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+
+object Addons {
+    private fun normalise(raw: String): String {
+        var u = raw.trim()
+        if (u.lowercase().startsWith("stremio://")) u = "https://" + u.substring(10)
+        if (!u.lowercase().startsWith("http://") && !u.lowercase().startsWith("https://")) u = "https://$u"
+        return u
+    }
+
+    fun resourceUrl(manifestUrl: String, path: String): String {
+        val cut = manifestUrl.substringBefore('?')
+        val query = manifestUrl.substringAfter('?', "")
+        val base = cut.removeSuffix("/manifest.json").trimEnd('/')
+        return "$base/$path" + if (query.isEmpty()) "" else "?$query"
+    }
+
+    private fun enc(s: String) = Uri.encode(s, ":")
+
+    suspend fun install(raw: String): Addon {
+        val n = normalise(raw)
+        val url = if (n.lowercase().contains("manifest.json")) n else n.trimEnd('/') + "/manifest.json"
+        val r = Net.get(url)
+        if (!r.ok) throw Exception("The link answered with error ${r.code}")
+        val m = runCatching { JSONObject(r.body) }.getOrNull()
+        if (m == null || m.str("id") == null || !m.has("resources")) throw Exception("That link isn't an add-on manifest")
+        return Addon(url, m)
+    }
+
+    private data class Candidate(val id: String, val anime: Boolean)
+
+    private fun candidates(ids: ShowIds, ep: Int, movie: Boolean): List<Candidate> = buildList {
+        val season = ids.imdbSeason ?: 1
+        ids.kitsu?.let { add(Candidate(if (movie) "kitsu:$it" else "kitsu:$it:$ep", true)) }
+        ids.imdb?.let { add(Candidate(if (movie) it else "$it:$season:$ep", false)) }
+        ids.mal?.let { add(Candidate(if (movie) "mal:$it" else "mal:$it:$ep", true)) }
+        ids.tmdb?.let { add(Candidate(if (movie) "tmdb:$it" else "tmdb:$it:$season:$ep", false)) }
+        add(Candidate("anilist:${ids.anilist}:$ep", true))
+    }
+
+    private suspend fun streamsFrom(a: Addon, ids: ShowIds, ep: Int, movie: Boolean): List<Stream> {
+        val spec = a.spec("stream") ?: return emptyList()
+        for (c in candidates(ids, ep, movie).filter { a.handles("stream", it.id) }.take(3)) {
+            val type = if (movie) "movie" else if (c.anime && "anime" in spec.first) "anime" else "series"
+            if (spec.first.isNotEmpty() && type !in spec.first) continue
+            val r = runCatching { Net.get(resourceUrl(a.url, "stream/${enc(type)}/${enc(c.id)}.json")) }.getOrNull() ?: continue
+            if (!r.ok) continue
+            val list = runCatching { JSONObject(r.body).optJSONArray("streams").objects().map(Stream::parse) }.getOrDefault(emptyList())
+            if (list.isNotEmpty()) return list
+        }
+        return emptyList()
+    }
+
+    /** Emits each add-on's playable sources as soon as it answers. */
+    fun streams(addons: List<Addon>, ids: ShowIds, ep: Int, movie: Boolean): Flow<Pair<Addon, List<Stream>>> = channelFlow {
+        coroutineScope {
+            addons.filter { it.enabled }.forEach { a ->
+                launch { send(a to streamsFrom(a, ids, ep, movie).filter { !it.url.isNullOrEmpty() }) }
+            }
+        }
+    }
+}
+
+object StreamLogic {
+    private fun has(pattern: String, text: String) = Regex(pattern, RegexOption.IGNORE_CASE).containsMatchIn(text)
+
+    fun isDebrid(s: Stream): Boolean {
+        val u = s.url ?: ""
+        return has("/playback/|/resolve/|real-?debrid", u) || has("\\[(RD|AD|PM|TB|DL)[^\\]]*\\]", s.name ?: "")
+    }
+
+    fun isCached(s: Stream): Boolean {
+        val n = "${s.name ?: ""} ${s.title ?: ""}"
+        if (n.contains("⚡")) return true
+        if (has("\\[(RD|AD|PM|TB|DL)\\+\\]", n)) return true
+        return has("\\bRD\\+|\\bcached\\b", n) && !has("not cached|uncached", n)
+    }
+
+    fun isUncached(s: Stream): Boolean {
+        if (isCached(s)) return false
+        val n = "${s.name ?: ""} ${s.title ?: ""}"
+        return n.contains("⬇") || n.contains("↓") || has("\\[(RD|AD|PM) download\\]|uncached|not cached", n)
+    }
+
+    fun audio(s: Stream): Audio {
+        val t = "${s.name ?: ""} ${s.title ?: ""} ${s.description ?: ""}"
+        return when {
+            has("\\bdub(bed)?\\b|\\beng(lish)? ?dub|\\bdual\\b", t) -> Audio.DUB
+            has("\\bsub(bed|s)?\\b|\\bsoft ?sub|\\bhard ?sub", t) -> Audio.SUB
+            else -> Audio.OTHER
+        }
+    }
+
+    private fun rank(s: Stream) = if (isCached(s)) 100 else if (isUncached(s)) 10 else 40
+
+    fun order(rows: List<StreamRow>, prefer: Audio): List<StreamRow> {
+        val audioRank = if (prefer == Audio.DUB) mapOf(Audio.DUB to 0, Audio.OTHER to 1, Audio.SUB to 2)
+        else mapOf(Audio.SUB to 0, Audio.OTHER to 1, Audio.DUB to 2)
+        return rows.sortedWith(compareBy<StreamRow> { audioRank[it.audio] }.thenByDescending { rank(it.stream) }.thenBy { it.index })
+    }
+
+    /** Cached sources in order, or everything when nothing is cached. */
+    fun autoCandidates(rows: List<StreamRow>, prefer: Audio): List<StreamRow> {
+        val ordered = order(rows, prefer)
+        val cached = ordered.filter { isCached(it.stream) }
+        return cached.ifEmpty { ordered.filter { !isUncached(it.stream) }.ifEmpty { ordered } }
+    }
+}
+
+class SkipTimes(val op: ClosedFloatingPointRange<Double>?, val ed: ClosedFloatingPointRange<Double>?)
+
+object AniSkip {
+    suspend fun fetch(mal: Int, ep: Int, durationSec: Double): SkipTimes? = runCatching {
+        val r = Net.get("https://api.aniskip.com/v2/skip-times/$mal/$ep?types[]=op&types[]=ed&episodeLength=${durationSec.toInt()}")
+        if (!r.ok) return null
+        val root = JSONObject(r.body)
+        if (!root.optBoolean("found")) return null
+        var op: ClosedFloatingPointRange<Double>? = null
+        var ed: ClosedFloatingPointRange<Double>? = null
+        root.optJSONArray("results").objects().forEach { row ->
+            val i = row.optJSONObject("interval") ?: return@forEach
+            val start = i.optDouble("startTime")
+            val end = i.optDouble("endTime")
+            if (!(end > start)) return@forEach
+            when (row.str("skipType")) {
+                "op" -> op = start..end
+                "ed" -> ed = start..end
+            }
+        }
+        SkipTimes(op, ed)
+    }.getOrNull()
+
+    fun inside(t: Double, w: ClosedFloatingPointRange<Double>?) = w != null && t >= w.start && t < w.endInclusive - 0.35
+}
