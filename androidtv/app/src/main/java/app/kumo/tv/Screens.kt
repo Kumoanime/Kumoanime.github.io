@@ -296,10 +296,32 @@ fun AccountScreen() {
         KText("Playback", 16, bold = true, modifier = Modifier.padding(top = 12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             key(version) {
-                Toggle("Auto Play", Store.autoPlay) { Store.autoPlay = !Store.autoPlay }
                 Toggle("Auto Next", Store.autoNext) { Store.autoNext = !Store.autoNext }
                 Toggle("Auto Skip", Store.autoSkip) { Store.autoSkip = !Store.autoSkip }
                 Toggle(if (Store.prefer == Audio.DUB) "Audio: Dub" else "Audio: Sub", true) { Store.prefer = if (Store.prefer == Audio.DUB) Audio.SUB else Audio.DUB }
+            }
+        }
+    }
+}
+
+/** Dimmed show art behind the whole screen. */
+@Composable
+private fun Backdrop(m: Media) {
+    (m.banner ?: m.cover)?.let { AsyncImage(it, null, Modifier.fillMaxSize().alpha(0.3f), contentScale = ContentScale.Crop) }
+}
+
+@Composable
+private fun SourceColumn(title: String, list: List<StreamRow>, firstKey: String?, modifier: Modifier, onPick: (StreamRow) -> Unit) {
+    Column(modifier) {
+        KText("$title  ·  ${list.size}", 16, Orange, bold = true, modifier = Modifier.padding(start = 6.dp, bottom = 6.dp))
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(6.dp)) {
+            items(list, key = { it.index }) { row ->
+                Tile(Modifier.fillMaxWidth(), focusKey = if (row === list.first() && firstKey != null) firstKey else "src:${row.index}", radius = 8.dp, grow = 1.02f, background = Surface, onClick = { onPick(row) }) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        KText(row.stream.label, 13, bold = true, lines = 1)
+                        KText(row.stream.detail.ifEmpty { row.addon.name }, 11, Muted, lines = 3)
+                    }
+                }
             }
         }
     }
@@ -318,7 +340,7 @@ fun ShowScreen(id: Int) {
     val next = remember(v) { Store.nextEpisode(m.route).coerceIn(1, maxOf(1, count)) }
     LaunchedEffect(m.id) { if (Nav.restore == null) Nav.restore = "show:play" }
     Box(Modifier.fillMaxSize()) {
-        m.banner?.let { AsyncImage(it, null, Modifier.fillMaxWidth().height(260.dp).alpha(0.25f), contentScale = ContentScale.Crop) }
+        Backdrop(m)
         Row(Modifier.fillMaxSize().padding(32.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
             Column(Modifier.width(280.dp).fillMaxHeight()) {
                 KText(m.title, 24, bold = true, lines = 3)
@@ -327,7 +349,7 @@ fun ShowScreen(id: Int) {
             }
             Column(Modifier.weight(1f).fillMaxHeight()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (count > 0) KButton(if (m.isMovie) "Play" else "Play episode $next", focusKey = "show:play", solid = true) { Nav.push(Route.Watch(m.id, next, Store.autoPlay)) }
+                    if (count > 0) KButton(if (m.isMovie) "Play" else "Play episode $next", focusKey = "show:play", solid = true) { Nav.push(Route.Watch(m.id, next, false)) }
                     KButton(if (Store.inWatchlist(m.route)) "✓ Watching" else "+ Watching", focusKey = "show:list") { Store.toggleWatch(m.route, m.title, m.cover) }
                     if (!m.isMovie && count > 0) KButton(if (marking) "Done marking" else "Mark watched") { marking = !marking }
                 }
@@ -340,7 +362,7 @@ fun ShowScreen(id: Int) {
                             val seen = pct > 0.92f
                             Tile(Modifier.height(44.dp), focusKey = "ep:$n", radius = 8.dp, background = if (seen) Color(0xFF2B2015) else Surface, onClick = {
                                 if (marking) Store.markWatched(m.route, n, !seen, m.title, m.cover)
-                                else Nav.push(Route.Watch(m.id, n, Store.autoPlay))
+                                else Nav.push(Route.Watch(m.id, n, false))
                             }) {
                                 KText((if (seen) "✓ " else "") + n, 14, if (seen) Orange else Color.White, modifier = Modifier.align(Alignment.Center))
                                 if (pct > 0f && !seen) Bar(pct, Modifier.align(Alignment.BottomStart))
@@ -395,28 +417,32 @@ fun WatchScreen(r: Route.Watch) {
         }
     }
     val m = media
-    Column(Modifier.fillMaxSize().padding(32.dp)) {
-        KText(m?.title ?: "Loading…", 22, bold = true, lines = 1)
-        KText(if (m?.isMovie == true) "Movie" else "Episode ${r.ep}", 14, Muted, modifier = Modifier.padding(top = 2.dp, bottom = 12.dp))
-        LastFailure.message?.let { KText(it, 14, Orange, modifier = Modifier.padding(bottom = 10.dp)) }
-        when {
-            failed -> KText("Couldn't load this episode.", 15, Muted)
-            Store.addons.none { it.enabled } -> KText("Add an add-on first, in the Add-ons tab.", 15, Muted)
-            rows.isEmpty() && done -> KText("No sources found for this episode.", 15, Muted)
-            rows.isEmpty() -> KText("Asking your add-ons…", 15, Muted)
-        }
-        val ordered = remember(rows.size, done) { StreamLogic.order(rows.toList(), prefer) }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
-            items(ordered, key = { it.index }) { row ->
-                Tile(Modifier.fillMaxWidth(), focusKey = if (row === ordered.firstOrNull()) "src:first" else "src:${row.index}", radius = 8.dp, grow = 1.01f, background = Surface, onClick = {
-                    auto = false
-                    val tail = StreamLogic.autoCandidates(rows.toList(), prefer).filter { it !== row }
-                    start(listOf(row) + tail)
-                }) {
-                    Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
-                        val tag = if (row.audio == Audio.DUB) "DUB  " else if (row.audio == Audio.SUB) "SUB  " else ""
-                        KText(tag + row.stream.label + "  ·  " + row.addon.name, 14, bold = true, lines = 1)
-                        KText(row.stream.detail, 12, Muted, lines = 1)
+    Box(Modifier.fillMaxSize()) {
+        m?.let { Backdrop(it) }
+        Column(Modifier.fillMaxSize().padding(start = 32.dp, end = 32.dp, top = 24.dp)) {
+            KText(m?.title ?: "Loading…", 22, bold = true, lines = 1)
+            KText(if (m?.isMovie == true) "Movie" else "Episode ${r.ep}", 14, Muted, modifier = Modifier.padding(top = 2.dp, bottom = 12.dp))
+            LastFailure.message?.let { KText(it, 14, Orange, modifier = Modifier.padding(bottom = 10.dp)) }
+            when {
+                failed -> KText("Couldn't load this episode.", 15, Muted)
+                Store.addons.none { it.enabled } -> KText("Add an add-on first, in Phone setup.", 15, Muted)
+                rows.isEmpty() && done -> KText("No sources found for this episode.", 15, Muted)
+                rows.isEmpty() -> KText("Asking your add-ons…", 15, Muted)
+            }
+            val ordered = remember(rows.size, done) { StreamLogic.order(rows.toList(), prefer) }
+            val groups = remember(ordered) {
+                val other = if (ordered.any { it.audio != Audio.OTHER }) "Other" else "Sources"
+                val names = if (prefer == Audio.DUB) listOf(Audio.DUB to "DUB", Audio.SUB to "SUB", Audio.OTHER to other)
+                else listOf(Audio.SUB to "SUB", Audio.DUB to "DUB", Audio.OTHER to other)
+                names.map { (kind, name) -> name to ordered.filter { it.audio == kind } }.filter { it.second.isNotEmpty() }
+            }
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                groups.forEachIndexed { i, (name, list) ->
+                    SourceColumn(name, list, if (i == 0) "src:first" else null, Modifier.weight(1f).fillMaxHeight()) { row ->
+                        auto = false
+                        // If it fails, fall back to sources of the same kind first.
+                        val kind = if (row.audio == Audio.DUB) Audio.DUB else prefer
+                        start(listOf(row) + StreamLogic.autoCandidates(rows.toList(), kind).filter { it !== row })
                     }
                 }
             }

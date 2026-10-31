@@ -36,9 +36,6 @@ object Store {
     var accountEmail by mutableStateOf<String?>(null)
     var syncState by mutableStateOf("")
 
-    var autoPlay: Boolean
-        get() = sp.getBoolean("autoPlay", true)
-        set(v) { sp.edit().putBoolean("autoPlay", v).apply(); version++ }
     var autoNext: Boolean
         get() = sp.getBoolean("autoNext", true)
         set(v) { sp.edit().putBoolean("autoNext", v).apply(); version++ }

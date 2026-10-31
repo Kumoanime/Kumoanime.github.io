@@ -118,7 +118,7 @@ fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
             focusKey = item.key,
             background = Surface,
             onLongClick = item.onLong,
-            onClick = { if (item.ep != null) Nav.push(Route.Watch(item.id, item.ep, Store.autoPlay)) else Nav.push(Route.Show(item.id)) },
+            onClick = { if (item.ep != null) Nav.push(Route.Watch(item.id, item.ep, false)) else Nav.push(Route.Show(item.id)) },
         ) {
             if (item.image != null) AsyncImage(item.image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else KText(item.title, 13, bold = true, modifier = Modifier.padding(8.dp))

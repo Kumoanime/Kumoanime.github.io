@@ -109,10 +109,10 @@ object StreamLogic {
     }
 
     fun audio(s: Stream): Audio {
-        val t = "${s.name ?: ""} ${s.title ?: ""} ${s.description ?: ""}"
+        val t = "${s.name ?: ""} ${s.title ?: ""} ${s.description ?: ""} ${s.filename ?: ""}"
         return when {
-            has("\\bdub(bed)?\\b|\\beng(lish)? ?dub|\\bdual\\b", t) -> Audio.DUB
-            has("\\bsub(bed|s)?\\b|\\bsoft ?sub|\\bhard ?sub", t) -> Audio.SUB
+            has("(?<![a-z])dub(bed|s)?(?![a-z])|(?<![a-z])dual(?![a-z])", t) -> Audio.DUB
+            has("(?<![a-z])sub(bed|s)?(?![a-z])|soft ?sub|hard ?sub", t) -> Audio.SUB
             else -> Audio.OTHER
         }
     }
