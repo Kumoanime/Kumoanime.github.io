@@ -184,7 +184,7 @@ fun KButton(label: String, modifier: Modifier = Modifier, focusKey: String? = nu
 
 class Hero(val title: String, val image: String?, val meta: String, val text: String?)
 
-class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onRemove: (() -> Unit)? = null)
+class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onRemove: (() -> Unit)? = null, val infoDock: Boolean = false)
 
 val PosterW = 118.dp
 val PosterH = 170.dp
@@ -231,7 +231,7 @@ fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
     val watching = Store.inWatchlist("#/a/${item.id}")
     Column(modifier.width(PosterW).onFocusChanged { focused = it.hasFocus }) {
         // Inside the column, so it anchors to this poster and not the whole row.
-        if (focused) PosterDock(item.id)
+        if (focused && item.infoDock) PosterDock(item.id)
         Tile(
             Modifier.width(PosterW).height(PosterH),
             focusKey = item.key,
@@ -277,7 +277,7 @@ fun Centered(text: String) {
 
 fun Media.metaLine() = listOfNotNull(rating?.let { "★ $it" }, seasonYear?.toString(), format?.replace("_", " "), genres.take(3).joinToString(", ").ifEmpty { null }).joinToString("   ·   ")
 fun Media.hero() = Hero(title, banner ?: cover, metaLine(), synopsis)
-fun Media.poster(key: String) = PosterItem(key, id, title, cover, "", rating = rating, hero = hero(), caption = false)
+fun Media.poster(key: String, infoDock: Boolean = false) = PosterItem(key, id, title, cover, "", rating = rating, hero = hero(), caption = false, infoDock = infoDock)
 
 /** A native dialog: Android handles the remote and the on-screen keyboard for it. */
 fun askText(context: Context, title: String, initial: String = "", password: Boolean = false, onDone: (String) -> Unit) {

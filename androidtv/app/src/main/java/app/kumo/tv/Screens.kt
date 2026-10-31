@@ -574,7 +574,7 @@ fun SearchScreen() {
         else if (SearchData.failed) KText("Couldn't reach AniList. Check the connection.", 14, Muted, modifier = Modifier.padding(top = 14.dp))
         else if (SearchData.results.isEmpty()) KText("Nothing matches. Try fewer filters.", 14, Muted, modifier = Modifier.padding(top = 14.dp))
         LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), Modifier.padding(top = 10.dp), state = gridState, contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            itemsIndexed(SearchData.results, key = { _, m -> m.id }) { i, m -> Poster(m.poster("search:${m.id}"), leftEdge(gridState, i)) }
+            itemsIndexed(SearchData.results, key = { _, m -> m.id }) { i, m -> Poster(m.poster("search:${m.id}", infoDock = true), leftEdge(gridState, i)) }
         }
     }
 }
