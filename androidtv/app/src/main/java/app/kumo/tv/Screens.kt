@@ -113,15 +113,15 @@ fun TabsScreen() {
     val dock = HomeData.dockFocus
     Box(Modifier.fillMaxSize()) {
         // The dock floats over the page, so only Left and Up leave the page,
-        // always for the current tab or the account button.
+        // always for the current tab or the account button. Right and Down stop
+        // at the edge, so a short row can't send focus to the account button.
         Box(
             Modifier.fillMaxSize().focusRequester(content).focusProperties {
                 exit = { d ->
                     when (d) {
                         FocusDirection.Left -> dock[HomeData.tab]
                         FocusDirection.Up -> HomeData.accountFocus
-                        FocusDirection.Down -> FocusRequester.Cancel
-                        else -> FocusRequester.Default
+                        else -> FocusRequester.Cancel
                     }
                 }
             }.focusRestorer().focusGroup(),
@@ -415,12 +415,12 @@ private fun Backdrop(image: String?, strength: Float) {
 }
 
 @Composable
-private fun SourceColumn(title: String, list: List<StreamRow>, firstKey: String?, modifier: Modifier, onPick: (StreamRow) -> Unit) {
+private fun SourceColumn(title: String, list: List<StreamRow>, state: LazyListState, keyOf: (StreamRow) -> String, modifier: Modifier, onPick: (StreamRow) -> Unit) {
     Column(modifier) {
         KText("$title  ·  ${list.size}", 16, Orange, bold = true, modifier = Modifier.padding(start = 6.dp, bottom = 6.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(6.dp)) {
+        LazyColumn(state = state, verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(6.dp)) {
             items(list, key = { it.index }) { row ->
-                Tile(Modifier.fillMaxWidth(), focusKey = if (row === list.first() && firstKey != null) firstKey else "src:${row.index}", radius = 8.dp, grow = 1.02f, background = Surface, onClick = { onPick(row) }) {
+                Tile(Modifier.fillMaxWidth(), focusKey = keyOf(row), radius = 8.dp, grow = 1.02f, background = Surface, onClick = { onPick(row) }) {
                     Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                         KText(row.stream.label, 13, bold = true, lines = 1)
                         KText(row.stream.detail.ifEmpty { row.addon.name }, 11, Muted, lines = 3)
@@ -544,9 +544,37 @@ fun WatchScreen(r: Route.Watch) {
                 else listOf(Audio.SUB to "SUB", Audio.DUB to "DUB", Audio.OTHER to other)
                 names.map { (kind, name) -> name to ordered.filter { it.audio == kind } }.filter { it.second.isNotEmpty() }
             }
-            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            val states = remember { List(3) { LazyListState() } }
+            val scope = rememberCoroutineScope()
+            val keyOf = { row: StreamRow -> if (row === groups.firstOrNull()?.second?.firstOrNull()) "src:first" else "src:${row.index}" }
+            // Columns scroll on their own, so Left and Right line the next column
+            // up with this one and land on the source at the same height.
+            val sideways = Modifier.onPreviewKeyEvent { e ->
+                val code = e.nativeKeyEvent.keyCode
+                val step = when (code) {
+                    android.view.KeyEvent.KEYCODE_DPAD_LEFT -> -1
+                    android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> 1
+                    else -> 0
+                }
+                val column = groups.indexOfFirst { g -> g.second.any { keyOf(it) == Nav.lastFocus } }
+                val target = column + step
+                if (step == 0 || column < 0) return@onPreviewKeyEvent false
+                if (target !in groups.indices) return@onPreviewKeyEvent target >= 0
+                if (e.type == KeyEventType.KeyDown) {
+                    val index = groups[column].second.indexOfFirst { keyOf(it) == Nav.lastFocus }
+                    val next = groups[target].second
+                    val here = states[column]
+                    scope.launch {
+                        states[target].scrollToItem(here.firstVisibleItemIndex.coerceAtMost(next.lastIndex), here.firstVisibleItemScrollOffset)
+                        withFrameNanos { }
+                        Nav.restore = keyOf(next[index.coerceAtMost(next.lastIndex)])
+                    }
+                }
+                true
+            }
+            Row(Modifier.fillMaxSize().then(sideways), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 groups.forEachIndexed { i, (name, list) ->
-                    SourceColumn(name, list, if (i == 0) "src:first" else null, Modifier.weight(1f).fillMaxHeight()) { row ->
+                    SourceColumn(name, list, states[i], keyOf, Modifier.weight(1f).fillMaxHeight()) { row ->
                         auto = false
                         // If it fails, fall back to sources of the same kind first.
                         val kind = if (row.audio == Audio.DUB) Audio.DUB else prefer
