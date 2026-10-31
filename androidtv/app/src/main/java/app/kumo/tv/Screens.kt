@@ -80,7 +80,7 @@ object HomeData {
     }
 }
 
-private val TabNames = listOf("Home", "Search", "Watching", "Add-ons", "Account")
+private val TabNames = listOf("Home", "Search", "Watching", "Add-ons", "Phone setup", "Account")
 
 @Composable
 fun TabsScreen() {
@@ -99,6 +99,7 @@ fun TabsScreen() {
                 1 -> SearchScreen()
                 2 -> WatchingScreen()
                 3 -> AddonsScreen()
+                4 -> PhoneSetupScreen()
                 else -> AccountScreen()
             }
         }
