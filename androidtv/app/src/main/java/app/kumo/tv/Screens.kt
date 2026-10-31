@@ -772,7 +772,10 @@ fun LinkAniListScreen() {
 fun RelatedScreen(id: Int) {
     var list by remember { mutableStateOf<List<AniList.Linked>?>(null) }
     var failed by remember { mutableStateOf(false) }
-    LaunchedEffect(id) { runCatching { list = AniList.related(id) }.onFailure { failed = true } }
+    LaunchedEffect(id) {
+        runCatching { list = AniList.related(id) }.onFailure { failed = true }
+        if (Nav.restore == null) Nav.restore = list?.firstOrNull()?.let { "related:${it.media.id}" }
+    }
     val shows = list ?: run { Centered(if (failed) "Couldn't load related shows." else "Loading…"); return }
     if (shows.isEmpty()) { Centered("Nothing related to this show."); return }
     Column(Modifier.fillMaxSize().padding(start = 28.dp, end = 28.dp, top = 24.dp)) {
