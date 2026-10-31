@@ -146,7 +146,9 @@ fun TabsScreen() {
                     when (d) {
                         FocusDirection.Left -> dock[HomeData.tab]
                         FocusDirection.Up -> HomeData.accountFocus
-                        else -> FocusRequester.Cancel
+                        FocusDirection.Right, FocusDirection.Down -> FocusRequester.Cancel
+                        // Anything else is the app moving focus itself, which must get through.
+                        else -> FocusRequester.Default
                     }
                 }
             }.focusRestorer().focusGroup(),
@@ -212,7 +214,12 @@ fun TabsScreen() {
             LaunchedEffect(Unit) { withFrameNanos { }; runCatching { firstNews.requestFocus() } }
             Column(
                 Modifier.align(Alignment.TopEnd).padding(top = 68.dp, end = 24.dp).width(330.dp)
-                    .focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()
+                    .focusProperties {
+                        exit = { d ->
+                            if (d == FocusDirection.Left || d == FocusDirection.Right || d == FocusDirection.Up || d == FocusDirection.Down) FocusRequester.Cancel
+                            else FocusRequester.Default
+                        }
+                    }.focusGroup()
                     .background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
