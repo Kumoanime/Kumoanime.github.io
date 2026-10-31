@@ -1,5 +1,12 @@
 package app.kumo.tv
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.animateScrollBy
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -331,6 +338,46 @@ private fun Rail(row: Int, key: String, title: String, items: List<PosterItem>) 
     }
 }
 
+private suspend fun glideTo(row: Int) {
+    val list = HomeData.list
+    val visible = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == row }
+    if (visible != null) list.animateScrollBy(visible.offset.toFloat(), tween(240, easing = FastOutSlowInEasing))
+    else list.animateScrollToItem(row)
+}
+
+/** The hero being shown, a moment after focus settles. */
+@Composable
+private fun rememberShownHero(): Hero? {
+    val hero = HomeData.heroTarget ?: HomeData.rows.firstOrNull()?.items?.firstOrNull()?.hero()
+    var shown by remember { mutableStateOf(hero) }
+    // A short wait so holding an arrow key doesn't load every banner on the way.
+    LaunchedEffect(hero) { delay(220); shown = hero }
+    return shown
+}
+
+// These two read the hero on their own, so changing poster only redraws them.
+@Composable
+private fun HomeBackdrop() {
+    val shown = rememberShownHero()
+    Crossfade(shown?.image, animationSpec = tween(320), label = "backdrop") { image -> Backdrop(image, 0.75f) }
+}
+
+@Composable
+private fun HeroText() {
+    val shown = rememberShownHero()
+    Column(Modifier.fillMaxWidth(0.62f).height(196.dp).padding(start = 28.dp, top = 26.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Crossfade(shown, animationSpec = tween(200), label = "hero") { hero ->
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                hero?.let {
+                    KText(it.title, 28, bold = true, lines = 2)
+                    KText(it.meta, 13, Color(0xFFE2E2E8), lines = 1)
+                    KText(it.text ?: "", 13, Muted, lines = 3)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 fun HomeScreen() {
     val context = LocalContext.current
@@ -340,8 +387,9 @@ fun HomeScreen() {
     if (HomeData.rows.isEmpty()) { Centered(if (HomeData.error) "Couldn't reach AniList. Check the connection." else "Loading…"); return }
     val firstListRow = if (cont.isNotEmpty()) 1 else 0
     val rowCount = HomeData.rows.size + firstListRow
-    // Every row lines up under the preview, however focus arrived, so none is left cropped.
-    LaunchedEffect(HomeData.focusedRow) { delay(60); HomeData.list.scrollToItem(HomeData.focusedRow) }
+    // Every row glides under the preview, however focus arrived, so none is left cropped.
+    // Read in a flow, not here, so moving rows doesn't redraw the whole page.
+    LaunchedEffect(Unit) { snapshotFlow { HomeData.focusedRow }.collectLatest { glideTo(it) } }
     val scope = rememberCoroutineScope()
     // Row-to-row movement is handled here: left to itself, focus can leave the
     // list for the side menu when the next row isn't laid out yet.
@@ -357,31 +405,24 @@ fun HomeScreen() {
                 val from = HomeData.focusedRow
                 val column = (HomeData.rowKeys[from]?.indexOf(Nav.lastFocus) ?: 0).coerceAtLeast(0) - (HomeData.rowStates[from]?.firstVisibleItemIndex ?: 0)
                 scope.launch {
-                    HomeData.list.scrollToItem(target)
+                    // The row above isn't built until the list starts moving towards it.
+                    val moving = launch { glideTo(target) }
+                    withTimeoutOrNull(500) { snapshotFlow { HomeData.list.layoutInfo.visibleItemsInfo.any { it.index == target } }.first { it } }
                     withFrameNanos { }
                     val keys = HomeData.rowKeys[target].orEmpty()
                     val first = HomeData.rowStates[target]?.firstVisibleItemIndex ?: 0
                     if (keys.isNotEmpty()) Nav.restore = keys[(first + column).coerceIn(0, keys.lastIndex)]
                     HomeData.moving = false
+                    moving.join()
                 }
             }
         }
         true
     }
-    val hero = HomeData.heroTarget ?: HomeData.rows.first().items.firstOrNull()?.hero()
-    var shown by remember { mutableStateOf(hero) }
-    // A short wait so holding an arrow key doesn't load every banner on the way.
-    LaunchedEffect(hero) { delay(220); shown = hero }
     Box(Modifier.fillMaxSize()) {
-    shown?.let { Backdrop(it.image, 0.75f) }
+    HomeBackdrop()
     Column(Modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxWidth(0.62f).height(196.dp).padding(start = 28.dp, top = 26.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        shown?.let {
-            KText(it.title, 28, bold = true, lines = 2)
-            KText(it.meta, 13, Color(0xFFE2E2E8), lines = 1)
-            KText(it.text ?: "", 13, Muted, lines = 3)
-        }
-    }
+    HeroText()
     LaunchedEffect(cont.size) { AniList.loadRatings(cont.mapNotNull { routeId(it.route) }) }
     LazyColumn(rowKeys.weight(1f), state = HomeData.list, contentPadding = PaddingValues(bottom = 220.dp)) {
         if (cont.isNotEmpty()) item(key = "continue") {

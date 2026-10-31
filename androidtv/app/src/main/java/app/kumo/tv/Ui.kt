@@ -1,5 +1,7 @@
 package app.kumo.tv
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import android.widget.Toast
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
@@ -92,9 +94,10 @@ fun Tile(
         }
     }
     val shape = RoundedCornerShape(radius)
+    val scale by animateFloatAsState(if (focused) grow else 1f, tween(140), label = "focus")
     Box(
         modifier
-            .graphicsLayer { val s = if (focused) grow else 1f; scaleX = s; scaleY = s }
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .focusRequester(focusRequester)
             .onFocusChanged {
                 if (it.isFocused) {
