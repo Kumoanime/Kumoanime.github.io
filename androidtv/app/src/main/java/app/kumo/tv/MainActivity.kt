@@ -40,7 +40,7 @@ class KumoApp : Application(), ImageLoaderFactory {
 
 sealed class Route {
     data object Tabs : Route()
-    data class Show(val id: Int) : Route()
+    data class Show(val id: Int, val ep: Int? = null) : Route()
     data class Watch(val id: Int, val ep: Int, val auto: Boolean) : Route()
     data class Player(val session: PlaySession) : Route()
     data object Addons : Route()
@@ -74,7 +74,7 @@ class MainActivity : ComponentActivity() {
                     BackHandler(Nav.stack.size > 1) { Nav.pop() }
                     when (val r = Nav.stack.last()) {
                         Route.Tabs -> TabsScreen()
-                        is Route.Show -> ShowScreen(r.id)
+                        is Route.Show -> ShowScreen(r.id, r.ep)
                         is Route.Watch -> WatchScreen(r)
                         is Route.Player -> PlayerScreen(r.session)
                         Route.Addons -> AddonsScreen()

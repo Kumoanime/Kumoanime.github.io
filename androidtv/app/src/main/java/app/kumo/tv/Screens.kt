@@ -1,5 +1,9 @@
 package app.kumo.tv
 
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.ui.draw.clip
 import android.view.KeyEvent as NativeKey
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -115,6 +119,23 @@ fun TabsScreen() {
     val content = HomeData.contentFocus
     val dock = HomeData.dockFocus
     val scope = rememberCoroutineScope()
+    val v = Store.version
+    val watchIds = remember(v) { Store.watchingItems().mapNotNull { routeId(it.optString("route")) } }
+    LaunchedEffect(watchIds) {
+        while (true) {
+            runCatching { HomeData.aired = AniList.recentlyAired(watchIds) }
+            delay(30 * 60_000L)
+        }
+    }
+    // The newest unwatched episode of each show in Watching.
+    val fresh = remember(v, HomeData.aired, watchIds) {
+        HomeData.aired.filter { it.media.id in watchIds && Store.percent(it.media.route, it.episode) <= 0.92f }.distinctBy { it.media.id }
+    }
+    val bell = remember { FocusRequester() }
+    val firstNews = remember { FocusRequester() }
+    var news by remember { mutableStateOf(false) }
+    // Focus moves first, or closing the panel would leave it with nowhere to go.
+    val closeNews = { runCatching { bell.requestFocus() }; news = false }
     Box(Modifier.fillMaxSize()) {
         // The dock floats over the page, so only Left and Up leave the page,
         // always for the current tab or the account button. Right and Down stop
@@ -167,11 +188,58 @@ fun TabsScreen() {
         }
         Tile(
             Modifier.align(Alignment.TopEnd).padding(top = 18.dp, end = 24.dp).size(42.dp)
-                .focusProperties { down = content; left = content },
+                .focusProperties { down = content; left = bell },
             focusKey = "account", requester = HomeData.accountFocus, radius = 21.dp, grow = 1.08f, outline = false,
             background = Color(0x99202026), focusedBackground = Color.White, onClick = { Nav.push(Route.Account) },
         ) { f ->
             Icon(Icons.Filled.Person, "Account", Modifier.align(Alignment.Center).size(22.dp), tint = if (f) Color.Black else Color.White)
+        }
+        Box(Modifier.align(Alignment.TopEnd).padding(top = 18.dp, end = 76.dp).size(42.dp)) {
+            Tile(
+                Modifier.fillMaxSize().focusProperties { down = content; right = HomeData.accountFocus; left = dock[HomeData.tab] },
+                focusKey = "bell", requester = bell, radius = 21.dp, grow = 1.08f, outline = false,
+                background = Color(0x99202026), focusedBackground = Color.White, onClick = { news = true },
+            ) { f ->
+                Icon(Icons.Filled.Notifications, "New episodes", Modifier.align(Alignment.Center).size(22.dp), tint = if (f) Color.Black else Color.White)
+            }
+            if (fresh.isNotEmpty()) Box(
+                Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-3).dp).size(18.dp).clip(RoundedCornerShape(9.dp)).background(Orange),
+                contentAlignment = Alignment.Center,
+            ) { KText(fresh.size.toString(), 10, Color.Black, bold = true) }
+        }
+        if (news) {
+            LaunchedEffect(Unit) { withFrameNanos { }; runCatching { firstNews.requestFocus() } }
+            Column(
+                Modifier.align(Alignment.TopEnd).padding(top = 68.dp, end = 24.dp).width(330.dp)
+                    .focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()
+                    .background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                KText("New episodes", 14, Muted, bold = true, modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 2.dp))
+                if (fresh.isEmpty()) Tile(Modifier.fillMaxWidth(), focusKey = "news:none", requester = firstNews, radius = 12.dp, grow = 1f, background = Surface, onClick = { closeNews() }) {
+                    KText("You're all caught up", 13, modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp))
+                }
+                LazyColumn(Modifier.heightIn(max = 400.dp), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(2.dp)) {
+                    itemsIndexed(fresh, key = { _, a -> a.media.id }) { i, a ->
+                        Tile(
+                            Modifier.fillMaxWidth(), focusKey = "news:${a.media.id}", requester = if (i == 0) firstNews else null, radius = 12.dp, grow = 1f, background = Surface,
+                            onClick = {
+                                closeNews()
+                                Nav.lastFocus = "bell"
+                                Nav.push(Route.Show(a.media.id, a.episode))
+                            },
+                        ) {
+                            Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                AsyncImage(a.media.cover, null, Modifier.size(40.dp, 56.dp).clip(RoundedCornerShape(6.dp)), contentScale = ContentScale.Crop)
+                                Column {
+                                    KText(a.media.title, 13, bold = true, lines = 1)
+                                    KText("Episode ${a.episode}", 12, Orange, lines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     // The dock is hidden, so Back brings it up. Back again goes Home, then exits.
@@ -179,6 +247,7 @@ fun TabsScreen() {
         if (!open) runCatching { dock[HomeData.tab].requestFocus() }
         else { HomeData.tab = 0; runCatching { dock[0].requestFocus() } }
     }
+    BackHandler(news) { closeNews() }
 }
 
 /** Lazy grids swallow Left on their first column, so it points at the dock here. */
@@ -205,15 +274,8 @@ fun HomeScreen() {
     LaunchedEffect(Unit) { HomeData.load() }
     val v = Store.version
     val cont = remember(v) { Store.continueRows() }
-    val watchIds = remember(v) { Store.watchingItems().mapNotNull { routeId(it.optString("route")) } }
-    LaunchedEffect(watchIds) { runCatching { HomeData.aired = AniList.recentlyAired(watchIds) } }
-    // The newest unwatched episode of each show in Watching.
-    val fresh = remember(v, HomeData.aired) {
-        HomeData.aired.filter { Store.percent(it.media.route, it.episode) <= 0.92f }.distinctBy { it.media.id }
-    }
     if (HomeData.rows.isEmpty()) { Centered(if (HomeData.error) "Couldn't reach AniList. Check the connection." else "Loading…"); return }
-    val freshRow = if (cont.isNotEmpty()) 1 else 0
-    val firstListRow = freshRow + if (fresh.isNotEmpty()) 1 else 0
+    val firstListRow = if (cont.isNotEmpty()) 1 else 0
     val rowCount = HomeData.rows.size + firstListRow
     // Every row lines up under the preview, however focus arrived, so none is left cropped.
     LaunchedEffect(HomeData.focusedRow) { delay(60); HomeData.list.scrollToItem(HomeData.focusedRow) }
@@ -265,11 +327,6 @@ fun HomeScreen() {
                 PosterItem(if (c === cont.first()) "home:first" else "continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, hero = Hero(c.title, c.poster, c.label, null), onRemove = { Store.hideFromContinue(c.route); Nav.restore = "home:first" })
             })
         }
-        if (fresh.isNotEmpty()) item(key = "fresh") {
-            Rail(freshRow, "fresh", "New episodes", fresh.map { a ->
-                PosterItem(if (cont.isEmpty() && a === fresh.first()) "home:first" else "fresh:${a.media.id}", a.media.id, a.media.title, a.media.cover, "Episode ${a.episode}", rating = a.media.rating, ep = a.episode, hero = a.media.hero())
-            })
-        }
         itemsIndexed(HomeData.rows, key = { _, r -> r.key }) { i, r ->
             Rail(i + firstListRow, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (firstListRow == 0 && i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
         }
@@ -315,7 +372,7 @@ fun WatchingScreen() {
     val state = rememberLazyGridState()
     LaunchedEffect(list.size) { AniList.loadRatings(list.mapNotNull { routeId(it.optString("route")) }) }
     if (list.isEmpty()) { Centered("Shows you add to Watching appear here."); return }
-    LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), state = state, contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), state = state, contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 72.dp, bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         itemsIndexed(list, key = { _, o -> o.optString("route") }) { i, o ->
             val id = routeId(o.optString("route")) ?: return@itemsIndexed
             Poster(PosterItem("watching:$id", id, o.str("title") ?: "", o.str("poster"), ""), leftEdge(state, i))
@@ -446,7 +503,7 @@ private fun SourceColumn(title: String, list: List<StreamRow>, state: LazyListSt
 }
 
 @Composable
-fun ShowScreen(id: Int) {
+fun ShowScreen(id: Int, ep: Int? = null) {
     val context = LocalContext.current
     var media by remember { mutableStateOf<Media?>(null) }
     var failed by remember { mutableStateOf(false) }
@@ -456,7 +513,15 @@ fun ShowScreen(id: Int) {
     val v = Store.version
     val count = m.episodeCount
     val next = remember(v) { Store.nextEpisode(m.route).coerceIn(1, maxOf(1, count)) }
-    LaunchedEffect(m.id) { if (Nav.restore == null) Nav.restore = "show:play" }
+    val episodes = rememberLazyGridState()
+    LaunchedEffect(m.id) {
+        if (ep != null && ep <= count) {
+            // Opened from the bell: start on the new episode, however far down it is.
+            episodes.scrollToItem(ep - 1)
+            withFrameNanos { }
+            Nav.restore = "ep:$ep"
+        } else if (Nav.restore == null) Nav.restore = "show:play"
+    }
     Box(Modifier.fillMaxSize()) {
         Backdrop(m)
         Row(Modifier.fillMaxSize().padding(32.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
@@ -474,7 +539,7 @@ fun ShowScreen(id: Int) {
                 if (marking) KText("Press OK on an episode to mark it watched or unwatched.", 13, Orange, modifier = Modifier.padding(top = 10.dp))
                 if (!m.isMovie) {
                     if (count == 0) KText("No episodes have aired yet.", 14, Muted, modifier = Modifier.padding(top = 16.dp))
-                    LazyVerticalGrid(GridCells.Adaptive(62.dp), Modifier.padding(top = 14.dp), contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyVerticalGrid(GridCells.Adaptive(62.dp), Modifier.padding(top = 14.dp), state = episodes, contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         items((1..count).toList(), key = { it }) { n ->
                             val pct = Store.percent(m.route, n)
                             val seen = pct > 0.92f
