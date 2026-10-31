@@ -779,7 +779,12 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
             if (!m.isMovie) episodes.scrollToItem(target - 1)
             withFrameNanos { }
             Nav.restore = if (m.isMovie) "show:play" else "ep:$target"
-            if (choose) { withFrameNanos { }; withFrameNanos { }; choosing = target }
+            if (choose) {
+                withFrameNanos { }; withFrameNanos { }
+                choosing = target
+                // Only once: coming back from the player shouldn't open it again.
+                Nav.replace(Route.Show(id, target))
+            }
         } else if (Nav.restore == null) Nav.restore = "show:play"
     }
     Box(Modifier.fillMaxSize()) {

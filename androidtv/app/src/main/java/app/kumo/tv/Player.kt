@@ -216,6 +216,9 @@ fun PlayerScreen(session: PlaySession) {
             duration = player.duration.takeIf { it > 0 }?.div(1000.0) ?: 0.0
             if (++tick % 20 == 0) save()
             val s = skips
+            // Rewinding to before the intro or outro offers the skip again.
+            if (s?.op != null && time < s.op.start) opDone = false
+            if (s?.ed != null && time < s.ed.start) edDone = false
             if (Store.autoSkip && s != null) {
                 if (!opDone && SkipSources.inside(time, s.op)) { opDone = true; player.seekTo((s.op!!.endInclusive * 1000).toLong()) }
                 if (!edDone && SkipSources.inside(time, s.ed)) { edDone = true; player.seekTo((s.ed!!.endInclusive * 1000).toLong()) }
