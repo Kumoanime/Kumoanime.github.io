@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.util.Calendar
 
 object AniList {
-    private const val FIELDS = "id idMal title{romaji english} coverImage{large} bannerImage format status episodes seasonYear averageScore genres nextAiringEpisode{episode airingAt}"
+    private const val FIELDS = "id idMal title{romaji english} coverImage{large} bannerImage format status episodes seasonYear averageScore genres description(asHtml:false) nextAiringEpisode{episode airingAt}"
     private val cache = HashMap<Int, Media>()
 
     private suspend fun graph(query: String, vars: JSONObject): JSONObject {
@@ -28,7 +28,7 @@ object AniList {
 
     suspend fun media(id: Int): Media {
         cache[id]?.takeIf { it.synopsis != null }?.let { return it }
-        val q = "query(\$id:Int){Media(id:\$id,type:ANIME){$FIELDS description(asHtml:false)}}"
+        val q = "query(\$id:Int){Media(id:\$id,type:ANIME){$FIELDS}}"
         val o = graph(q, JSONObject().put("id", id)).optJSONObject("Media") ?: throw Exception("Couldn't load this show")
         return Media.parse(o).also { cache[id] = it }
     }

@@ -7,12 +7,20 @@ import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -24,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
@@ -48,6 +57,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 
@@ -278,37 +288,63 @@ fun PlayerScreen(session: PlaySession) {
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     keepScreenOn = true
                     this.player = player
+                    // White text with a black outline and no box behind it. Embedded
+                    // styles are ignored because anime subtitles often bring their own box.
+                    subtitleView?.apply {
+                        setStyle(CaptionStyleCompat(android.graphics.Color.WHITE, android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT, CaptionStyleCompat.EDGE_TYPE_OUTLINE, android.graphics.Color.BLACK, null))
+                        setApplyEmbeddedStyles(false)
+                        setApplyEmbeddedFontSizes(false)
+                        setBottomPaddingFraction(0.07f)
+                    }
                 }
             },
             modifier = Modifier.fillMaxSize(),
         )
 
         val pill: String? = when {
-            countdown >= 0 -> "Episode ${session.ep + 1} in $countdown  ·  OK plays now  ·  Back cancels"
-            inOp -> "Press OK to skip intro"
-            inEd -> "Press OK to skip outro"
+            countdown >= 0 -> "Episode ${session.ep + 1} in $countdown   ·   OK to play   ·   Back to cancel"
+            inOp -> "Skip intro"
+            inEd -> "Skip outro"
             else -> null
         }
-        pill?.let {
-            KText(it, 16, Color.Black, bold = true, modifier = Modifier.align(Alignment.BottomEnd).padding(32.dp).background(Orange, RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 9.dp))
-        }
+        val controls = ready && (paused || System.currentTimeMillis() < overlayUntil)
         if (!ready) {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                KText(if (note.isEmpty()) "Starting ${m.title}…" else note, 16)
+                CircularProgressIndicator(Modifier.size(40.dp), color = Orange, strokeWidth = 3.dp)
+                KText(if (note.isEmpty()) m.title else note, 16, bold = true, modifier = Modifier.padding(top = 16.dp))
                 KText(session.candidates.getOrNull(index)?.stream?.label ?: "", 12, Muted, lines = 1)
             }
-        } else if (buffering) KText("Buffering…", 15, Color.White, modifier = Modifier.align(Alignment.TopEnd).padding(24.dp))
-
-        if (ready && (paused || System.currentTimeMillis() < overlayUntil)) {
+        } else if (buffering) {
+            CircularProgressIndicator(Modifier.align(Alignment.Center).size(40.dp), color = Color.White, strokeWidth = 3.dp)
+        } else if (paused) {
+            Box(Modifier.align(Alignment.Center).size(72.dp).clip(CircleShape).background(Color(0x80000000)), contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.PlayArrow, "Paused", Modifier.size(44.dp), tint = Color.White)
+            }
+        }
+        if (controls) {
+            Column(
+                Modifier.align(Alignment.TopStart).fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color(0xB3000000), Color.Transparent)))
+                    .padding(start = 36.dp, end = 36.dp, top = 24.dp, bottom = 44.dp),
+            ) {
+                KText(m.title, 20, bold = true, lines = 1)
+                KText(label, 13, Color(0xFFD5D5DB))
+            }
             Column(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                     .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000))))
-                    .padding(start = 32.dp, end = 32.dp, top = 40.dp, bottom = 22.dp),
+                    .padding(start = 36.dp, end = 36.dp, top = 56.dp, bottom = 22.dp),
             ) {
-                KText("${m.title}  ·  $label" + if (paused) "  ·  Paused" else "", 16, bold = true, lines = 1)
-                Box(Modifier.padding(vertical = 8.dp)) { Bar(if (duration > 0) (time / duration).toFloat() else 0f) }
-                KText("${clock(time)} / ${clock(duration)}     ◀ ▶ 10 seconds     ▲ audio & subtitles", 13, Color(0xFFD5D5DB))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    KText(clock(time), 13, bold = true)
+                    Box(Modifier.weight(1f)) { Bar(if (duration > 0) (time / duration).toFloat() else 0f) }
+                    KText(clock(duration), 13, Color(0xFFD5D5DB))
+                }
+                KText("▲  Audio and subtitles", 12, Muted, modifier = Modifier.padding(top = 9.dp))
             }
+        }
+        pill?.let {
+            KText(it, 15, Color.Black, bold = true, modifier = Modifier.align(Alignment.BottomEnd).padding(end = 36.dp, bottom = if (controls) 84.dp else 36.dp).background(Color.White, RoundedCornerShape(24.dp)).padding(horizontal = 22.dp, vertical = 10.dp))
         }
     }
 }

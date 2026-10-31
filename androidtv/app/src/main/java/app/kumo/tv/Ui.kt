@@ -46,9 +46,9 @@ import coil.compose.AsyncImage
 
 val Orange = Color(0xFFFF8A1F)
 val Pink = Color(0xFFFF4F8B)
-val Surface = Color(0xFF17171B)
-val Raise = Color(0xFF26262C)
-val Muted = Color(0xFFA5A5AE)
+val Surface = Color(0x1FFFFFFF)
+val Raise = Color(0x2EFFFFFF)
+val Muted = Color(0xFFB4B4BE)
 
 /** Any item the remote can land on: it grows and gets an orange edge when focused. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -56,8 +56,9 @@ val Muted = Color(0xFFA5A5AE)
 fun Tile(
     modifier: Modifier = Modifier,
     focusKey: String? = null,
-    radius: Dp = 10.dp,
-    grow: Float = 1.06f,
+    radius: Dp = 12.dp,
+    grow: Float = 1.07f,
+    outline: Boolean = true,
     background: Color = Color.Transparent,
     focusedBackground: Color = background,
     onFocused: (() -> Unit)? = null,
@@ -88,7 +89,7 @@ fun Tile(
             }
             .clip(shape)
             .background(if (focused) focusedBackground else background)
-            .border(if (focused) 3.dp else 0.dp, if (focused) Orange else Color.Transparent, shape)
+            .border(if (focused && outline) 2.dp else 0.dp, if (focused && outline) Color.White else Color.Transparent, shape)
             .combinedClickable(interactionSource = source, indication = null, onLongClick = onLongClick, onClick = onClick),
     ) { content(focused) }
 }
@@ -100,15 +101,17 @@ fun KText(text: String, size: Int = 15, color: Color = Color.White, bold: Boolea
 
 @Composable
 fun KButton(label: String, modifier: Modifier = Modifier, focusKey: String? = null, solid: Boolean = false, onClick: () -> Unit) {
-    Tile(modifier, focusKey = focusKey, radius = 8.dp, grow = 1.04f, background = if (solid) Pink else Raise, onClick = onClick) {
-        KText(label, 15, bold = true, modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp))
+    Tile(modifier, focusKey = focusKey, radius = 22.dp, grow = 1.05f, outline = false, background = if (solid) Orange else Raise, focusedBackground = Color.White, onClick = onClick) { f ->
+        KText(label, 14, if (f || solid) Color.Black else Color.White, bold = true, modifier = Modifier.padding(horizontal = 20.dp, vertical = 9.dp))
     }
 }
 
-class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val onLong: (() -> Unit)? = null)
+class Hero(val title: String, val image: String?, val meta: String, val text: String?)
 
-val PosterW = 128.dp
-val PosterH = 184.dp
+class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onLong: (() -> Unit)? = null)
+
+val PosterW = 118.dp
+val PosterH = 170.dp
 
 @Composable
 fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
@@ -117,25 +120,25 @@ fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
             Modifier.width(PosterW).height(PosterH),
             focusKey = item.key,
             background = Surface,
+            onFocused = { item.hero?.let { HomeData.heroTarget = it } },
             onLongClick = item.onLong,
             onClick = { if (item.ep != null) Nav.push(Route.Watch(item.id, item.ep, false)) else Nav.push(Route.Show(item.id)) },
         ) {
             if (item.image != null) AsyncImage(item.image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else KText(item.title, 13, bold = true, modifier = Modifier.padding(8.dp))
-            item.rating?.let {
-                KText("★ $it", 11, Color(0xFFFFC04D), modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).background(Color(0xD0000000), RoundedCornerShape(8.dp)).padding(horizontal = 5.dp, vertical = 1.dp))
-            }
             item.pct?.let { Bar(it, Modifier.align(Alignment.BottomStart)) }
         }
-        KText(item.title, 12, bold = true, lines = 1, modifier = Modifier.padding(top = 6.dp))
-        KText(item.sub, 11, Muted, lines = 1)
+        if (item.caption) {
+            KText(item.title, 12, bold = true, lines = 1, modifier = Modifier.padding(top = 7.dp))
+            KText(item.sub, 11, Muted, lines = 1)
+        }
     }
 }
 
 @Composable
 fun Bar(pct: Float, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxWidth().height(4.dp).background(Color(0x66000000))) {
-        Box(Modifier.fillMaxWidth(pct.coerceIn(0f, 1f)).height(4.dp).background(Pink))
+    Box(modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0x55FFFFFF))) {
+        Box(Modifier.fillMaxWidth(pct.coerceIn(0f, 1f)).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Orange))
     }
 }
 
@@ -144,7 +147,9 @@ fun Centered(text: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { KText(text, 16, Muted) }
 }
 
-fun Media.poster(key: String) = PosterItem(key, id, title, cover, listOfNotNull(seasonYear?.toString(), format?.replace("_", " ")).joinToString(" · "), rating = rating)
+fun Media.metaLine() = listOfNotNull(rating?.let { "★ $it" }, seasonYear?.toString(), format?.replace("_", " "), genres.take(3).joinToString(", ").ifEmpty { null }).joinToString("   ·   ")
+fun Media.hero() = Hero(title, banner ?: cover, metaLine(), synopsis)
+fun Media.poster(key: String) = PosterItem(key, id, title, cover, "", rating = rating, hero = hero(), caption = false)
 
 /** A native dialog: Android handles the remote and the on-screen keyboard for it. */
 fun askText(context: Context, title: String, initial: String = "", password: Boolean = false, onDone: (String) -> Unit) {
@@ -181,10 +186,12 @@ fun pick(context: Context, title: String, items: List<String>, onPick: (Int) -> 
 
 @Composable
 fun Toggle(label: String, on: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Tile(modifier, radius = 8.dp, grow = 1.03f, background = Raise, onClick = onClick) {
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            KText(label, 14)
-            Box(Modifier.size(12.dp).clip(RoundedCornerShape(6.dp)).background(if (on) Orange else Color(0xFF55555C)))
+    Tile(modifier, radius = 22.dp, grow = 1.04f, outline = false, background = Raise, focusedBackground = Color.White, onClick = onClick) { f ->
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            KText(label, 14, if (f) Color.Black else Color.White, bold = true)
+            Box(Modifier.size(28.dp, 16.dp).clip(RoundedCornerShape(8.dp)).background(if (on) Orange else Color(0x66808088)), contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart) {
+                Box(Modifier.padding(2.dp).size(12.dp).clip(RoundedCornerShape(6.dp)).background(Color.White))
+            }
         }
     }
 }

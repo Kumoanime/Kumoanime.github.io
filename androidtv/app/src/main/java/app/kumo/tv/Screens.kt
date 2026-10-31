@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -25,6 +26,14 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,6 +58,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -70,6 +80,7 @@ object HomeData {
     var focusedRow = 0
     val rowFocus = HashMap<Int, FocusRequester>()
     var aired by mutableStateOf<List<AniList.Aired>>(emptyList())
+    var heroTarget by mutableStateOf<Hero?>(null)
 
     suspend fun load() {
         if (rows.isNotEmpty()) return
@@ -84,17 +95,30 @@ object HomeData {
     }
 }
 
-private val TabNames = listOf("Home", "Search", "Watching", "Add-ons", "Phone setup", "Account")
+private val Tabs = listOf(
+    "Home" to Icons.Filled.Home, "Search" to Icons.Filled.Search, "Watching" to Icons.Filled.Favorite,
+    "Add-ons" to Icons.AutoMirrored.Filled.List, "Phone setup" to Icons.Filled.Phone, "Account" to Icons.Filled.Person,
+)
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun TabsScreen() {
     Row(Modifier.fillMaxSize()) {
-        Column(Modifier.width(156.dp).fillMaxHeight().background(Color(0xFF0D0D10)).padding(horizontal = 12.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            KText("KUMO", 22, Orange, bold = true, modifier = Modifier.padding(start = 8.dp, bottom = 16.dp))
-            TabNames.forEachIndexed { i, name ->
-                Tile(Modifier.fillMaxWidth(), focusKey = "tab:$i", radius = 8.dp, grow = 1.02f, background = if (HomeData.tab == i) Raise else Color.Transparent, onFocused = { HomeData.tab = i }, onClick = {}) {
-                    KText(name, 15, if (HomeData.tab == i) Color.White else Muted, modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp))
+        var open by remember { mutableStateOf(false) }
+        Column(
+            Modifier.width(if (open) 172.dp else 68.dp).fillMaxHeight().background(Color(0xFF08080B))
+                .onFocusChanged { open = it.hasFocus }.padding(horizontal = 12.dp, vertical = 22.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            KText(if (open) "KUMO" else "K", 20, Orange, bold = true, lines = 1, modifier = Modifier.padding(start = 9.dp, bottom = 22.dp))
+            Tabs.forEachIndexed { i, (name, icon) ->
+                val selected = HomeData.tab == i
+                Tile(Modifier.fillMaxWidth(), focusKey = "tab:$i", radius = 22.dp, grow = 1f, outline = false, focusedBackground = Color.White, onFocused = { HomeData.tab = i }, onClick = {}) { f ->
+                    val tint = if (f) Color.Black else if (selected) Orange else Muted
+                    Row(Modifier.padding(horizontal = 10.dp, vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(icon, name, Modifier.size(20.dp), tint = tint)
+                        if (open) KText(name, 14, tint, bold = f, lines = 1)
+                    }
                 }
             }
         }
@@ -122,9 +146,9 @@ fun TabsScreen() {
 private fun Rail(row: Int, key: String, title: String, items: List<PosterItem>) {
     val state = HomeData.rails.getOrPut(key) { LazyListState() }
     val focus = HomeData.rowFocus.getOrPut(row) { FocusRequester() }
-    Column(Modifier.padding(bottom = 18.dp).onFocusChanged { if (it.hasFocus) HomeData.focusedRow = row }) {
-        KText(title, 18, bold = true, modifier = Modifier.padding(start = 24.dp, bottom = 10.dp))
-        LazyRow(Modifier.focusRequester(focus).focusRestorer(), state = state, contentPadding = PaddingValues(horizontal = 24.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+    Column(Modifier.padding(bottom = 14.dp).onFocusChanged { if (it.hasFocus) HomeData.focusedRow = row }) {
+        KText(title, 15, bold = true, modifier = Modifier.padding(start = 28.dp, bottom = 6.dp))
+        LazyRow(Modifier.focusRequester(focus).focusRestorer(), state = state, contentPadding = PaddingValues(horizontal = 28.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(items, key = { it.key }) { Poster(it) }
         }
     }
@@ -164,23 +188,39 @@ fun HomeScreen() {
         }
         true
     }
-    LazyColumn(rowKeys, state = HomeData.list, contentPadding = PaddingValues(top = 22.dp, bottom = 40.dp)) {
+    val hero = HomeData.heroTarget ?: HomeData.rows.first().items.firstOrNull()?.hero()
+    var shown by remember { mutableStateOf(hero) }
+    // A short wait so holding an arrow key doesn't load every banner on the way.
+    LaunchedEffect(hero) { delay(220); shown = hero }
+    Box(Modifier.fillMaxSize()) {
+    shown?.let { Backdrop(it.image, 0.75f) }
+    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxWidth(0.62f).height(196.dp).padding(start = 28.dp, top = 26.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        shown?.let {
+            KText(it.title, 28, bold = true, lines = 2)
+            KText(it.meta, 13, Color(0xFFE2E2E8), lines = 1)
+            KText(it.text ?: "", 13, Muted, lines = 3)
+        }
+    }
+    LazyColumn(rowKeys.weight(1f), state = HomeData.list, contentPadding = PaddingValues(bottom = 220.dp)) {
         if (cont.isNotEmpty()) item(key = "continue") {
             Rail(0, "continue", "Continue watching  ·  hold OK to remove", cont.mapNotNull { c ->
                 val id = routeId(c.route) ?: return@mapNotNull null
-                PosterItem("continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, onLong = {
+                PosterItem("continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, hero = Hero(c.title, c.poster, c.label, null), onLong = {
                     confirm(context, "Remove ${c.title} from Continue watching?", "Remove") { Store.hideFromContinue(c.route); Nav.restore = "tab:0" }
                 })
             })
         }
         if (fresh.isNotEmpty()) item(key = "fresh") {
             Rail(freshRow, "fresh", "New episodes", fresh.map { a ->
-                PosterItem("fresh:${a.media.id}", a.media.id, a.media.title, a.media.cover, "Episode ${a.episode}", ep = a.episode)
+                PosterItem("fresh:${a.media.id}", a.media.id, a.media.title, a.media.cover, "Episode ${a.episode}", ep = a.episode, hero = a.media.hero())
             })
         }
         itemsIndexed(HomeData.rows, key = { _, r -> r.key }) { i, r ->
             Rail(i + firstListRow, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
         }
+    }
+    }
     }
 }
 
@@ -306,8 +346,14 @@ fun AccountScreen() {
 
 /** Dimmed show art behind the whole screen. */
 @Composable
-private fun Backdrop(m: Media) {
-    (m.banner ?: m.cover)?.let { AsyncImage(it, null, Modifier.fillMaxSize().alpha(0.3f), contentScale = ContentScale.Crop) }
+private fun Backdrop(m: Media) = Backdrop(m.banner ?: m.cover, 0.55f)
+
+@Composable
+private fun Backdrop(image: String?, strength: Float) {
+    if (image == null) return
+    AsyncImage(image, null, Modifier.fillMaxSize().alpha(strength), contentScale = ContentScale.Crop)
+    Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color.Black, 0.7f to Color(0x66000000), 1f to Color.Transparent)))
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.25f to Color.Transparent, 0.85f to Color.Black)))
 }
 
 @Composable
@@ -343,7 +389,7 @@ fun ShowScreen(id: Int) {
         Backdrop(m)
         Row(Modifier.fillMaxSize().padding(32.dp), horizontalArrangement = Arrangement.spacedBy(28.dp)) {
             Column(Modifier.width(280.dp).fillMaxHeight()) {
-                KText(m.title, 24, bold = true, lines = 3)
+                KText(m.title, 30, bold = true, lines = 3)
                 KText(listOfNotNull(m.rating?.let { "★ $it" }, m.seasonYear?.toString(), m.format?.replace("_", " "), if (count > 0) "$count eps" else null).joinToString("  ·  "), 13, Muted, modifier = Modifier.padding(top = 6.dp))
                 KText(m.synopsis ?: "", 13, Color(0xFFD5D5DB), lines = 9, modifier = Modifier.padding(top = 12.dp))
             }
@@ -360,11 +406,11 @@ fun ShowScreen(id: Int) {
                         items((1..count).toList(), key = { it }) { n ->
                             val pct = Store.percent(m.route, n)
                             val seen = pct > 0.92f
-                            Tile(Modifier.height(44.dp), focusKey = "ep:$n", radius = 8.dp, background = if (seen) Color(0xFF2B2015) else Surface, onClick = {
+                            Tile(Modifier.height(44.dp), focusKey = "ep:$n", radius = 12.dp, outline = false, background = if (seen) Color(0x33FF8A1F) else Surface, focusedBackground = Color.White, onClick = {
                                 if (marking) Store.markWatched(m.route, n, !seen, m.title, m.cover)
                                 else Nav.push(Route.Watch(m.id, n, false))
-                            }) {
-                                KText((if (seen) "✓ " else "") + n, 14, if (seen) Orange else Color.White, modifier = Modifier.align(Alignment.Center))
+                            }) { f ->
+                                KText((if (seen) "✓ " else "") + n, 14, if (f) Color.Black else if (seen) Orange else Color.White, bold = true, modifier = Modifier.align(Alignment.Center))
                                 if (pct > 0f && !seen) Bar(pct, Modifier.align(Alignment.BottomStart))
                             }
                         }
