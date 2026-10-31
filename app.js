@@ -278,10 +278,29 @@ async function addRepo(url) {
 
 // ---------- progress ----------
 function saveProgress(key, data) {
-  progress[key] = { ...progress[key], ...data, updated: Date.now() };
+  // Watching an episode again brings a removed show back to Continue watching.
+  const { hidden, ...prev } = progress[key] || {};
+  progress[key] = { ...prev, ...data, updated: Date.now() };
   store.set("progress", progress);
   scheduleSync();
   dismissIfWatched(key);
+}
+// Hides a show without deleting its rows, so episode marks and "Play next" stay.
+// Bumping `updated` makes the hide win the merge on other devices.
+function hideFromContinue(route, title) {
+  const now = Date.now();
+  for (const [k, p] of Object.entries(progress)) if (p.route === route) progress[k] = { ...p, hidden: true, updated: now };
+  store.set("progress", progress);
+  scheduleSync();
+  eachView(root => root.querySelectorAll("[data-hide-show]").forEach(b => { if (b.dataset.hideShow === route) b.closest(".card-wrap")?.remove(); }));
+  const rail = viewRoot("#/")?.querySelector("#sec-continue .rail");
+  const left = rail?.scrollLeft || 0;
+  refreshContinue();
+  const next = viewRoot("#/")?.querySelector("#sec-continue .rail");
+  if (next) next.scrollLeft = left;
+  const more = viewRoot("#/more/continue");
+  if (more && !continueRows().length) viewMore(["continue"], more);
+  toast(`Removed ${title || "show"} from Continue watching`);
 }
 function continueHref(p) {
   const route = p.route || "";
@@ -293,7 +312,7 @@ function continueHref(p) {
 function continueRows() {
   const rows = [];
   for (const [k, p] of Object.entries(progress)) {
-    if (!p.route || (p.d && p.t / p.d > 0.92)) continue;
+    if (!p.route || p.hidden || (p.d && p.t / p.d > 0.92)) continue;
     rows.push({ ...p, key: k });
   }
   return rows.sort((a, b) => b.updated - a.updated);
@@ -343,7 +362,8 @@ function card(href, title, poster, sub, extra = "", opt = {}) {
   const air = opt.air != null ? opt.air : (airId ? airForId(airId) : "");
   const name = title || "this show";
   const label = on ? `Remove ${name} from Watching` : `Add ${name} to Watching`;
-  return `<div class="card-wrap"><button type="button" class="quick-add${on ? " on" : ""}" data-quick="${esc(watchRoute)}" data-title="${esc(name)}" data-poster="${esc(poster || "")}" aria-pressed="${on ? "true" : "false"}" aria-label="${esc(label)}"><span aria-hidden="true">${on ? "✓" : "+"}</span></button><a class="card" href="${esc(href)}"><div class="cover"${airId ? ` data-air-for="${esc(airId)}"` : ""}>${img}${air ? `<span class="air-pill">${esc(air)}</span>` : ""}${extra}</div><div class="t">${esc(title)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</a></div>`;
+  const remove = opt.removable ? `<button type="button" class="card-remove" data-hide-show="${esc(watchRoute)}" data-title="${esc(name)}" aria-label="${esc(`Remove ${name} from Continue watching`)}"><span aria-hidden="true">×</span></button>` : "";
+  return `<div class="card-wrap">${remove}<button type="button" class="quick-add${on ? " on" : ""}" data-quick="${esc(watchRoute)}" data-title="${esc(name)}" data-poster="${esc(poster || "")}" aria-pressed="${on ? "true" : "false"}" aria-label="${esc(label)}"><span aria-hidden="true">${on ? "✓" : "+"}</span></button><a class="card" href="${esc(href)}"><div class="cover"${airId ? ` data-air-for="${esc(airId)}"` : ""}>${img}${air ? `<span class="air-pill">${esc(air)}</span>` : ""}${extra}</div><div class="t">${esc(title)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</a></div>`;
 }
 const ratingBadge = r => r ? `<span class="rating" aria-label="Rated ${r} out of 10">★ ${r}</span>` : "";
 const aniRating = m => m.averageScore ? (m.averageScore / 10).toFixed(1) : "";
@@ -431,7 +451,7 @@ function continueHtml() {
   return `<div id="sec-continue">${section("Continue watching", `<div class="rail">${cont.map((p, i) => {
     const airId = (/^#\/a\/(\d+)$/.exec(p.route || "") || [])[1] || "";
     const extra = p.d ? `<div class="bar-prog" style="width:${Math.min(100, p.t / p.d * 100)}%"></div>` : "";
-    return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId, eager: i === 0, defer: i >= 4 });
+    return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId, removable: true, eager: i === 0, defer: i >= 4 });
   }).join("")}${moreTile(href, "Continue watching")}</div>`, "", href)}</div>`;
 }
 function viewRoot(key) {
@@ -582,7 +602,7 @@ async function viewMore(rest, root, gen) {
       ? `<div class="grid">${rows.map((p, i) => {
           const airId = (/^#\/a\/(\d+)$/.exec(p.route || "") || [])[1] || "";
           const extra = p.d ? `<div class="bar-prog" style="width:${Math.min(100, p.t / p.d * 100)}%"></div>` : "";
-          return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId, eager: i < 2, defer: i >= 8 });
+          return card(continueHref(p), p.title, p.poster, p.label, extra, { watchRoute: p.route, airId, removable: true, eager: i < 2, defer: i >= 8 });
         }).join("")}</div>`
       : `<div class="empty"><h3>Nothing in progress</h3>Start an episode and it will show up here.</div>`);
     observeLazy(root);
@@ -1378,6 +1398,13 @@ app.addEventListener("click", e => {
     e.stopPropagation();
     const routeKey = quick.dataset.quick;
     if (routeKey) toggleWatch(routeKey, quick.dataset.title || "", quick.dataset.poster || "");
+    return;
+  }
+  const hide = t.closest(".card-remove");
+  if (hide && app.contains(hide)) {
+    e.preventDefault();
+    e.stopPropagation();
+    hideFromContinue(hide.dataset.hideShow, hide.dataset.title);
     return;
   }
   const pref = t.closest("[data-pref]");
