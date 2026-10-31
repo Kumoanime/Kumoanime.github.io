@@ -77,7 +77,7 @@ object HomeData {
     val list = LazyListState()
     val rails = HashMap<String, LazyListState>()
     var tab by mutableIntStateOf(0)
-    var focusedRow = 0
+    var focusedRow by mutableIntStateOf(0)
     val contentFocus = FocusRequester()
     val accountFocus = FocusRequester()
     val dockFocus = List(4) { FocusRequester() }
@@ -199,6 +199,8 @@ fun HomeScreen() {
     val freshRow = if (cont.isNotEmpty()) 1 else 0
     val firstListRow = freshRow + if (fresh.isNotEmpty()) 1 else 0
     val rowCount = HomeData.rows.size + firstListRow
+    // Every row lines up under the preview, however focus arrived, so none is left cropped.
+    LaunchedEffect(HomeData.focusedRow) { delay(60); HomeData.list.scrollToItem(HomeData.focusedRow) }
     val scope = rememberCoroutineScope()
     // Row-to-row movement is handled here: left to itself, focus can leave the
     // list for the side menu when the next row isn't laid out yet.
