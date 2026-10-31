@@ -147,6 +147,16 @@
     }, opts || {});
   }
 
+  function undismissEpisode(state, mediaId, episode, nowSec) {
+    const key = episodeKey(mediaId, episode);
+    const base = state || { items: [], dismissed: [] };
+    if (!key) return cleanNotes(base, { nowSec, watchingIds: null, progress: {} });
+    return cleanNotes({
+      items: base.items || [],
+      dismissed: (base.dismissed || []).filter(d => String((d && d.key) || d) !== key),
+    }, { nowSec, watchingIds: null, progress: {} });
+  }
+
   function dismissEpisode(state, mediaId, episode, nowSec) {
     const key = episodeKey(mediaId, episode);
     const base = state || { items: [], dismissed: [] };
@@ -184,7 +194,7 @@
 
   const api = {
     episodeKey, progressKey, isWatched, hasAired, cleanNotes, ingestAired,
-    dismissEpisode, unreadCount, airLabel, WATCHED,
+    dismissEpisode, undismissEpisode, unreadCount, airLabel, WATCHED,
   };
   root.KumoNotify = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

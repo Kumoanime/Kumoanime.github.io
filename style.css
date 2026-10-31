@@ -297,6 +297,12 @@ h1,h2,h3{font-weight:400;margin:0}
 .wt-player select{background:var(--raise);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:44px;font:inherit;font-size:16px}
 .wt-air{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin-bottom:20px;font-size:14px;color:var(--muted)}
 a.ep{text-align:center;text-decoration:none;color:inherit}
+.ep-wrap{position:relative;min-width:0}
+.ep-wrap .ep{width:100%;justify-content:flex-start;padding-left:10px}
+.ep-mark{position:absolute;top:3px;right:3px;z-index:2;width:28px;height:28px;border-radius:50%;border:1px solid var(--line);background:rgb(0 0 0/.72);color:var(--muted);font-size:13px;line-height:1;padding:0}
+.ep-mark[aria-pressed="true"]{background:var(--logo);border-color:var(--logo);color:#000}
+.acct-audio{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 10px 4px;color:var(--muted);font-size:14px}
+.acct-audio select{background:var(--raise);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:44px;font:inherit;font-size:16px}
 .wt-report{margin-top:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:13px;color:var(--muted)}
 .wt-report summary{cursor:pointer;color:var(--ink);font-weight:700}
 .wt-report ul{margin:8px 0 0;padding-left:18px;display:grid;gap:4px}
