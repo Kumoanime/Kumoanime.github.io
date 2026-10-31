@@ -43,6 +43,9 @@ sealed class Route {
     data class Show(val id: Int) : Route()
     data class Watch(val id: Int, val ep: Int, val auto: Boolean) : Route()
     data class Player(val session: PlaySession) : Route()
+    data object Addons : Route()
+    data object PhoneSetup : Route()
+    data object Account : Route()
 }
 
 object Nav {
@@ -73,6 +76,9 @@ class MainActivity : ComponentActivity() {
                         is Route.Show -> ShowScreen(r.id)
                         is Route.Watch -> WatchScreen(r)
                         is Route.Player -> PlayerScreen(r.session)
+                        Route.Addons -> AddonsScreen()
+                        Route.PhoneSetup -> PhoneSetupScreen()
+                        Route.Account -> AccountScreen()
                     }
                 }
             }

@@ -27,12 +27,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -60,6 +59,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -78,6 +78,9 @@ object HomeData {
     val rails = HashMap<String, LazyListState>()
     var tab by mutableIntStateOf(0)
     var focusedRow = 0
+    val contentFocus = FocusRequester()
+    val accountFocus = FocusRequester()
+    val dockFocus = List(4) { FocusRequester() }
     val rowFocus = HashMap<Int, FocusRequester>()
     var aired by mutableStateOf<List<AniList.Aired>>(emptyList())
     var heroTarget by mutableStateOf<Hero?>(null)
@@ -96,49 +99,75 @@ object HomeData {
 }
 
 private val Tabs = listOf(
-    "Home" to Icons.Filled.Home, "Search" to Icons.Filled.Search, "Watching" to Icons.Filled.Favorite,
-    "Add-ons" to Icons.AutoMirrored.Filled.List, "Phone setup" to Icons.Filled.Phone, "Account" to Icons.Filled.Person,
+    "Home" to Icons.Filled.Home, "Search" to Icons.Filled.Search,
+    "Watching" to Icons.Filled.Favorite, "Settings" to Icons.Filled.Settings,
 )
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun TabsScreen() {
-    Row(Modifier.fillMaxSize()) {
-        var open by remember { mutableStateOf(false) }
-        Column(
-            Modifier.width(if (open) 172.dp else 68.dp).fillMaxHeight().background(Color(0xFF08080B))
-                .onFocusChanged { open = it.hasFocus }.padding(horizontal = 12.dp, vertical = 22.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            KText(if (open) "KUMO" else "K", 20, Orange, bold = true, lines = 1, modifier = Modifier.padding(start = 9.dp, bottom = 22.dp))
-            Tabs.forEachIndexed { i, (name, icon) ->
-                val selected = HomeData.tab == i
-                Tile(Modifier.fillMaxWidth(), focusKey = "tab:$i", radius = 22.dp, grow = 1f, outline = false, focusedBackground = Color.White, onFocused = { HomeData.tab = i }, onClick = {}) { f ->
-                    val tint = if (f) Color.Black else if (selected) Orange else Muted
-                    Row(Modifier.padding(horizontal = 10.dp, vertical = 9.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(icon, name, Modifier.size(20.dp), tint = tint)
-                        if (open) KText(name, 14, tint, bold = f, lines = 1)
+    var open by remember { mutableStateOf(false) }
+    val content = HomeData.contentFocus
+    val dock = HomeData.dockFocus
+    Box(Modifier.fillMaxSize()) {
+        // The dock floats over the page, so only Left and Up leave the page,
+        // always for the current tab or the account button.
+        Box(
+            Modifier.fillMaxSize().focusRequester(content).focusProperties {
+                exit = { d ->
+                    when (d) {
+                        FocusDirection.Left -> dock[HomeData.tab]
+                        FocusDirection.Up -> HomeData.accountFocus
+                        FocusDirection.Down -> FocusRequester.Cancel
+                        else -> FocusRequester.Default
                     }
                 }
-            }
-        }
-        // Only Left leaves a tab's content. Up and Down stop at the edge of a list.
-        Box(
-            Modifier.weight(1f).fillMaxHeight().focusProperties {
-                exit = { d -> if (d == FocusDirection.Up || d == FocusDirection.Down) FocusRequester.Cancel else FocusRequester.Default }
-            }.focusGroup(),
+            }.focusRestorer().focusGroup(),
         ) {
             when (HomeData.tab) {
                 0 -> HomeScreen()
                 1 -> SearchScreen()
                 2 -> WatchingScreen()
-                3 -> AddonsScreen()
-                4 -> PhoneSetupScreen()
-                else -> AccountScreen()
+                else -> SettingsScreen()
             }
         }
+        Column(
+            Modifier.align(Alignment.CenterStart).padding(start = 14.dp).width(if (open) 164.dp else 48.dp)
+                .graphicsLayer { alpha = if (open) 1f else 0f }
+                .onFocusChanged { open = it.hasFocus }
+                .onPreviewKeyEvent { e ->
+                    if (e.nativeKeyEvent.keyCode != NativeKey.KEYCODE_DPAD_RIGHT) return@onPreviewKeyEvent false
+                    if (e.type == KeyEventType.KeyDown) runCatching { content.requestFocus() }
+                    true
+                }
+                .background(Color(0xF216161C), RoundedCornerShape(30.dp)).padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Tabs.forEachIndexed { i, (name, icon) ->
+                val selected = HomeData.tab == i
+                Tile(Modifier.fillMaxWidth(), focusKey = "tab:$i", requester = dock[i], radius = 22.dp, grow = 1f, outline = false, focusedBackground = Color.White, onFocused = { HomeData.tab = i }, onClick = { runCatching { content.requestFocus() } }) { f ->
+                    val tint = if (f) Color.Black else if (selected) Orange else Muted
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(icon, name, Modifier.size(20.dp), tint = tint)
+                        KText(name, 14, tint, bold = f, lines = 1)
+                    }
+                }
+            }
+        }
+        Tile(
+            Modifier.align(Alignment.TopEnd).padding(top = 18.dp, end = 24.dp).size(42.dp)
+                .focusProperties { down = content; left = content },
+            requester = HomeData.accountFocus, radius = 21.dp, grow = 1.08f, outline = false,
+            background = Color(0x99202026), focusedBackground = Color.White, onClick = { Nav.push(Route.Account) },
+        ) { f ->
+            Icon(Icons.Filled.Person, "Account", Modifier.align(Alignment.Center).size(22.dp), tint = if (f) Color.Black else Color.White)
+        }
     }
-    BackHandler(HomeData.tab != 0) { HomeData.tab = 0; Nav.restore = "tab:0" }
+    // The dock is hidden, so Back brings it up. Back again goes Home, then exits.
+    BackHandler(!open || HomeData.tab != 0) {
+        if (!open) runCatching { dock[HomeData.tab].requestFocus() }
+        else { HomeData.tab = 0; runCatching { dock[0].requestFocus() } }
+    }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -178,7 +207,8 @@ fun HomeScreen() {
         if (code != NativeKey.KEYCODE_DPAD_DOWN && code != NativeKey.KEYCODE_DPAD_UP) return@onPreviewKeyEvent false
         if (e.type == KeyEventType.KeyDown) {
             val target = HomeData.focusedRow + if (code == NativeKey.KEYCODE_DPAD_DOWN) 1 else -1
-            if (target in 0 until rowCount) scope.launch {
+            if (target < 0) runCatching { HomeData.accountFocus.requestFocus() }
+            else if (target < rowCount) scope.launch {
                 HomeData.list.scrollToItem(target)
                 withFrameNanos { }
                 runCatching { HomeData.rowFocus[target]?.requestFocus() }
@@ -205,7 +235,7 @@ fun HomeScreen() {
             Rail(0, "continue", "Continue watching  ·  hold OK to remove", cont.mapNotNull { c ->
                 val id = routeId(c.route) ?: return@mapNotNull null
                 PosterItem(if (c === cont.first()) "home:first" else "continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, hero = Hero(c.title, c.poster, c.label, null), onLong = {
-                    confirm(context, "Remove ${c.title} from Continue watching?", "Remove") { Store.hideFromContinue(c.route); Nav.restore = "tab:0" }
+                    confirm(context, "Remove ${c.title} from Continue watching?", "Remove") { Store.hideFromContinue(c.route); Nav.restore = "home:first" }
                 })
             })
         }
@@ -232,7 +262,7 @@ object SearchData {
 fun SearchScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    Column(Modifier.fillMaxSize().padding(24.dp)) {
+    Column(Modifier.fillMaxSize().padding(start = 40.dp, end = 80.dp, top = 28.dp)) {
         KButton(if (SearchData.query.isEmpty()) "Type a title to search" else "Searching: ${SearchData.query}", focusKey = "search:box") {
             askText(context, "Search anime", SearchData.query) { q ->
                 if (q.isEmpty()) return@askText
@@ -270,7 +300,9 @@ fun AddonsScreen() {
     val scope = rememberCoroutineScope()
     val v = Store.addonVersion
     val list = remember(v) { Store.addons.toList() }
-    LazyColumn(contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    LaunchedEffect(Unit) { if (Nav.restore == null) Nav.restore = "addons:add" }
+    LazyColumn(contentPadding = PaddingValues(40.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { KText("Add-ons", 26, bold = true, modifier = Modifier.padding(bottom = 6.dp)) }
         item {
             KButton("Add an add-on link", focusKey = "addons:add", solid = true) {
                 askText(context, "Paste or type the manifest link") { url ->
@@ -305,12 +337,35 @@ fun AddonsScreen() {
 }
 
 @Composable
+fun SettingsScreen() {
+    val version = Store.version
+    val addonCount = Store.addonVersion.let { Store.addons.size }
+    Column(Modifier.fillMaxSize().padding(start = 40.dp, end = 80.dp, top = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        KText("Settings", 26, bold = true)
+        KText("Playback", 15, Muted, bold = true, modifier = Modifier.padding(top = 14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            key(version) {
+                Toggle("Auto Next", Store.autoNext) { Store.autoNext = !Store.autoNext }
+                Toggle("Auto Skip", Store.autoSkip) { Store.autoSkip = !Store.autoSkip }
+                Toggle(if (Store.prefer == Audio.DUB) "Audio: Dub" else "Audio: Sub", true) { Store.prefer = if (Store.prefer == Audio.DUB) Audio.SUB else Audio.DUB }
+            }
+        }
+        KText("Add-ons and devices", 15, Muted, bold = true, modifier = Modifier.padding(top = 18.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            KButton(if (addonCount == 1) "Add-ons  ·  1 installed" else "Add-ons  ·  $addonCount installed", focusKey = "set:addons") { Nav.push(Route.Addons) }
+            KButton("Phone setup", focusKey = "set:phone") { Nav.push(Route.PhoneSetup) }
+        }
+    }
+}
+
+@Composable
 fun AccountScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val version = Store.version
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        val email = Store.accountEmail
+    val email = Store.accountEmail
+    LaunchedEffect(email) { if (Nav.restore == null) Nav.restore = if (email != null) "acct:sync" else "acct:login" }
+    Column(Modifier.fillMaxSize().padding(40.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        KText("Account", 26, bold = true)
         if (email != null) {
             KText(email, 18, bold = true)
             KText("Watching and progress sync with your phone. ${Store.syncState}", 14, Muted)
@@ -329,14 +384,6 @@ fun AccountScreen() {
                         }
                     }
                 }
-            }
-        }
-        KText("Playback", 16, bold = true, modifier = Modifier.padding(top = 12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            key(version) {
-                Toggle("Auto Next", Store.autoNext) { Store.autoNext = !Store.autoNext }
-                Toggle("Auto Skip", Store.autoSkip) { Store.autoSkip = !Store.autoSkip }
-                Toggle(if (Store.prefer == Audio.DUB) "Audio: Dub" else "Audio: Sub", true) { Store.prefer = if (Store.prefer == Audio.DUB) Audio.SUB else Audio.DUB }
             }
         }
     }
@@ -469,7 +516,7 @@ fun WatchScreen(r: Route.Watch) {
             LastFailure.message?.let { KText(it, 14, Orange, modifier = Modifier.padding(bottom = 10.dp)) }
             when {
                 failed -> KText("Couldn't load this episode.", 15, Muted)
-                Store.addons.none { it.enabled } -> KText("Add an add-on first, in Phone setup.", 15, Muted)
+                Store.addons.none { it.enabled } -> KText("Add an add-on first, in Settings.", 15, Muted)
                 rows.isEmpty() && done -> KText("No sources found for this episode.", 15, Muted)
                 rows.isEmpty() -> KText("Asking your add-ons…", 15, Muted)
             }

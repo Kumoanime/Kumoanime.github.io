@@ -56,6 +56,7 @@ val Muted = Color(0xFFB4B4BE)
 fun Tile(
     modifier: Modifier = Modifier,
     focusKey: String? = null,
+    requester: FocusRequester? = null,
     radius: Dp = 12.dp,
     grow: Float = 1.07f,
     outline: Boolean = true,
@@ -68,19 +69,19 @@ fun Tile(
 ) {
     val source = remember { MutableInteractionSource() }
     val focused by source.collectIsFocusedAsState()
-    val requester = remember { FocusRequester() }
+    val focusRequester = requester ?: remember { FocusRequester() }
     val wanted = Nav.restore
     LaunchedEffect(focusKey, wanted) {
         if (focusKey != null && wanted == focusKey) {
             Nav.restore = null
-            runCatching { requester.requestFocus() }
+            runCatching { focusRequester.requestFocus() }
         }
     }
     val shape = RoundedCornerShape(radius)
     Box(
         modifier
             .graphicsLayer { val s = if (focused) grow else 1f; scaleX = s; scaleY = s }
-            .focusRequester(requester)
+            .focusRequester(focusRequester)
             .onFocusChanged {
                 if (it.isFocused) {
                     if (focusKey != null) Nav.lastFocus = focusKey
