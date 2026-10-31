@@ -229,8 +229,9 @@ fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
     var focused by remember { mutableStateOf(false) }
     Store.version  // Adds or removes the tick when Watching changes.
     val watching = Store.inWatchlist("#/a/${item.id}")
-    if (focused) PosterDock(item.id)
     Column(modifier.width(PosterW).onFocusChanged { focused = it.hasFocus }) {
+        // Inside the column, so it anchors to this poster and not the whole row.
+        if (focused) PosterDock(item.id)
         Tile(
             Modifier.width(PosterW).height(PosterH),
             focusKey = item.key,
