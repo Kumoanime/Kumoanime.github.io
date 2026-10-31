@@ -394,12 +394,6 @@ fun HomeScreen() {
     }
 }
 
-object SearchData {
-    var query by mutableStateOf("")
-    var results by mutableStateOf<List<Media>>(emptyList())
-    var busy by mutableStateOf(false)
-}
-
 private class Filter(val key: String, val name: String, val options: List<Pair<String, String>>)
 
 private val Filters = run {
