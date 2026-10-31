@@ -22,7 +22,10 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -165,7 +168,7 @@ fun TabsScreen() {
         Tile(
             Modifier.align(Alignment.TopEnd).padding(top = 18.dp, end = 24.dp).size(42.dp)
                 .focusProperties { down = content; left = content },
-            requester = HomeData.accountFocus, radius = 21.dp, grow = 1.08f, outline = false,
+            focusKey = "account", requester = HomeData.accountFocus, radius = 21.dp, grow = 1.08f, outline = false,
             background = Color(0x99202026), focusedBackground = Color.White, onClick = { Nav.push(Route.Account) },
         ) { f ->
             Icon(Icons.Filled.Person, "Account", Modifier.align(Alignment.Center).size(22.dp), tint = if (f) Color.Black else Color.White)
@@ -176,6 +179,11 @@ fun TabsScreen() {
         if (!open) runCatching { dock[HomeData.tab].requestFocus() }
         else { HomeData.tab = 0; runCatching { dock[0].requestFocus() } }
     }
+}
+
+/** Lazy grids swallow Left on their first column, so it points at the dock here. */
+private fun leftEdge(state: LazyGridState, index: Int) = Modifier.focusProperties {
+    if (index % state.layoutInfo.maxSpan.coerceAtLeast(1) == 0) left = HomeData.dockFocus[HomeData.tab]
 }
 
 @Composable
@@ -293,8 +301,9 @@ fun SearchScreen() {
         }
         if (SearchData.busy) KText("Searching…", 14, Muted, modifier = Modifier.padding(top = 16.dp))
         else if (SearchData.query.isNotEmpty() && SearchData.results.isEmpty()) KText("Nothing found.", 14, Muted, modifier = Modifier.padding(top = 16.dp))
-        LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), Modifier.padding(top = 14.dp), contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            items(SearchData.results, key = { it.id }) { Poster(it.poster("search:${it.id}")) }
+        val gridState = rememberLazyGridState()
+        LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), Modifier.padding(top = 14.dp), state = gridState, contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            itemsIndexed(SearchData.results, key = { _, m -> m.id }) { i, m -> Poster(m.poster("search:${m.id}"), leftEdge(gridState, i)) }
         }
     }
 }
@@ -303,12 +312,13 @@ fun SearchScreen() {
 fun WatchingScreen() {
     val v = Store.version
     val list = remember(v) { Store.watchingItems() }
+    val state = rememberLazyGridState()
     LaunchedEffect(list.size) { AniList.loadRatings(list.mapNotNull { routeId(it.optString("route")) }) }
     if (list.isEmpty()) { Centered("Shows you add to Watching appear here."); return }
-    LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        items(list, key = { it.optString("route") }) { o ->
-            val id = routeId(o.optString("route")) ?: return@items
-            Poster(PosterItem("watching:$id", id, o.str("title") ?: "", o.str("poster"), ""))
+    LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), state = state, contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        itemsIndexed(list, key = { _, o -> o.optString("route") }) { i, o ->
+            val id = routeId(o.optString("route")) ?: return@itemsIndexed
+            Poster(PosterItem("watching:$id", id, o.str("title") ?: "", o.str("poster"), ""), leftEdge(state, i))
         }
     }
 }
