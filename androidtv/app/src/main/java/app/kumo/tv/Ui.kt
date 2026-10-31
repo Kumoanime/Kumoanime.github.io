@@ -1,13 +1,6 @@
 package app.kumo.tv
 
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntRect
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupPositionProvider
-import androidx.compose.ui.window.PopupProperties
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.animation.core.animateFloatAsState
@@ -184,54 +177,19 @@ fun KButton(label: String, modifier: Modifier = Modifier, focusKey: String? = nu
 
 class Hero(val title: String, val image: String?, val meta: String, val text: String?)
 
-class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onRemove: (() -> Unit)? = null, val infoDock: Boolean = false)
+class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onRemove: (() -> Unit)? = null, val titleAbove: Boolean = false)
 
 val PosterW = 118.dp
 val PosterH = 170.dp
-
-/** Sits above the poster, or below it when there's no room. */
-private object AbovePoster : PopupPositionProvider {
-    override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
-        val x = anchorBounds.left.coerceIn(16, maxOf(16, windowSize.width - popupContentSize.width - 16))
-        val above = anchorBounds.top - popupContentSize.height - 12
-        return IntOffset(x, if (above >= 12) above else anchorBounds.bottom + 12)
-    }
-}
-
-/** Title, rating and description, after a few seconds on a poster. */
-@Composable
-private fun PosterDock(id: Int) {
-    var media by remember { mutableStateOf<Media?>(null) }
-    LaunchedEffect(id) {
-        delay(2500)
-        media = runCatching { AniList.media(id) }.getOrNull()
-    }
-    val m = media ?: return
-    Popup(popupPositionProvider = AbovePoster, properties = PopupProperties(focusable = false)) {
-        var shown by remember { mutableStateOf(false) }
-        LaunchedEffect(Unit) { shown = true }
-        val fade by animateFloatAsState(if (shown) 1f else 0f, tween(180), label = "dock")
-        Column(
-            Modifier.width(340.dp).graphicsLayer { alpha = fade }.background(Color(0xF716161C), RoundedCornerShape(16.dp)).padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-        ) {
-            KText(m.title, 16, bold = true, lines = 2)
-            KText(m.metaLine(), 12, Orange, lines = 1)
-            KText(m.synopsis ?: "No description yet.", 12, Color(0xFFD5D5DB), lines = 5)
-        }
-    }
-}
 
 @Composable
 fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val rating = item.rating ?: AniList.ratings[item.id]
-    var focused by remember { mutableStateOf(false) }
     Store.version  // Adds or removes the tick when Watching changes.
     val watching = Store.inWatchlist("#/a/${item.id}")
-    Column(modifier.width(PosterW).onFocusChanged { focused = it.hasFocus }) {
-        // Inside the column, so it anchors to this poster and not the whole row.
-        if (focused && item.infoDock) PosterDock(item.id)
+    Column(modifier.width(PosterW)) {
+        if (item.titleAbove) KText(item.title, 12, bold = true, lines = 1, modifier = Modifier.padding(bottom = 6.dp))
         Tile(
             Modifier.width(PosterW).height(PosterH),
             focusKey = item.key,
@@ -277,7 +235,7 @@ fun Centered(text: String) {
 
 fun Media.metaLine() = listOfNotNull(rating?.let { "★ $it" }, seasonYear?.toString(), format?.replace("_", " "), genres.take(3).joinToString(", ").ifEmpty { null }).joinToString("   ·   ")
 fun Media.hero() = Hero(title, banner ?: cover, metaLine(), synopsis)
-fun Media.poster(key: String, infoDock: Boolean = false) = PosterItem(key, id, title, cover, "", rating = rating, hero = hero(), caption = false, infoDock = infoDock)
+fun Media.poster(key: String, titleAbove: Boolean = false) = PosterItem(key, id, title, cover, "", rating = rating, hero = hero(), caption = false, titleAbove = titleAbove)
 
 /** A native dialog: Android handles the remote and the on-screen keyboard for it. */
 fun askText(context: Context, title: String, initial: String = "", password: Boolean = false, onDone: (String) -> Unit) {
