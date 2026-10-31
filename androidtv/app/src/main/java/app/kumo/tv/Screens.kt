@@ -1,5 +1,6 @@
 package app.kumo.tv
 
+import android.view.KeyEvent as NativeKey
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -33,6 +34,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -54,6 +64,8 @@ object HomeData {
     val list = LazyListState()
     val rails = HashMap<String, LazyListState>()
     var tab by mutableIntStateOf(0)
+    var focusedRow = 0
+    val rowFocus = HashMap<Int, FocusRequester>()
 
     suspend fun load() {
         if (rows.isNotEmpty()) return
@@ -94,12 +106,14 @@ fun TabsScreen() {
     BackHandler(HomeData.tab != 0) { HomeData.tab = 0; Nav.restore = "tab:0" }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
-private fun Rail(key: String, title: String, items: List<PosterItem>) {
+private fun Rail(row: Int, key: String, title: String, items: List<PosterItem>) {
     val state = HomeData.rails.getOrPut(key) { LazyListState() }
-    Column(Modifier.padding(bottom = 18.dp)) {
+    val focus = HomeData.rowFocus.getOrPut(row) { FocusRequester() }
+    Column(Modifier.padding(bottom = 18.dp).onFocusChanged { if (it.hasFocus) HomeData.focusedRow = row }) {
         KText(title, 18, bold = true, modifier = Modifier.padding(start = 24.dp, bottom = 10.dp))
-        LazyRow(state = state, contentPadding = PaddingValues(horizontal = 24.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        LazyRow(Modifier.focusRequester(focus).focusRestorer(), state = state, contentPadding = PaddingValues(horizontal = 24.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             items(items, key = { it.key }) { Poster(it) }
         }
     }
@@ -114,9 +128,26 @@ fun HomeScreen() {
     if (HomeData.rows.isEmpty()) { Centered(if (HomeData.error) "Couldn't reach AniList. Check the connection." else "Loading…"); return }
     val firstKey = if (cont.isNotEmpty()) "continue:${cont[0].route}" else "home:first"
     LaunchedEffect(firstKey) { if (Nav.restore == "home:first") Nav.restore = firstKey }
-    LazyColumn(state = HomeData.list, contentPadding = PaddingValues(top = 22.dp, bottom = 40.dp)) {
+    val rowCount = HomeData.rows.size + if (cont.isNotEmpty()) 1 else 0
+    val scope = rememberCoroutineScope()
+    // Row-to-row movement is handled here: left to itself, focus can leave the
+    // list for the side menu when the next row isn't laid out yet.
+    val rowKeys = Modifier.onPreviewKeyEvent { e ->
+        val code = e.nativeKeyEvent.keyCode
+        if (code != NativeKey.KEYCODE_DPAD_DOWN && code != NativeKey.KEYCODE_DPAD_UP) return@onPreviewKeyEvent false
+        if (e.type == KeyEventType.KeyDown) {
+            val target = HomeData.focusedRow + if (code == NativeKey.KEYCODE_DPAD_DOWN) 1 else -1
+            if (target in 0 until rowCount) scope.launch {
+                HomeData.list.scrollToItem(target)
+                withFrameNanos { }
+                runCatching { HomeData.rowFocus[target]?.requestFocus() }
+            }
+        }
+        true
+    }
+    LazyColumn(rowKeys, state = HomeData.list, contentPadding = PaddingValues(top = 22.dp, bottom = 40.dp)) {
         if (cont.isNotEmpty()) item(key = "continue") {
-            Rail("continue", "Continue watching  ·  hold OK to remove", cont.mapNotNull { c ->
+            Rail(0, "continue", "Continue watching  ·  hold OK to remove", cont.mapNotNull { c ->
                 val id = routeId(c.route) ?: return@mapNotNull null
                 PosterItem("continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, onLong = {
                     confirm(context, "Remove ${c.title} from Continue watching?", "Remove") { Store.hideFromContinue(c.route); Nav.restore = "tab:0" }
@@ -124,7 +155,7 @@ fun HomeScreen() {
             })
         }
         itemsIndexed(HomeData.rows, key = { _, r -> r.key }) { i, r ->
-            Rail(r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
+            Rail(i + if (cont.isNotEmpty()) 1 else 0, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
         }
     }
 }
