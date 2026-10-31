@@ -87,6 +87,21 @@ object AniList {
         return ids
     }
 
+    /** Full HD art for a show, or null when there's none. */
+    private val artFound = HashMap<Int, String?>()
+    suspend fun art(context: android.content.Context, id: Int): String? {
+        if (artFound.containsKey(id)) return artFound[id]
+        val r = runCatching { Net.get("https://arm.haglund.dev/api/v2/ids?source=anilist&id=$id") }.getOrNull()
+        if (r == null || !r.ok) return null
+        val imdb = runCatching { JSONObject(r.body).str("imdb") }.getOrNull()
+        val url = imdb?.let { "https://images.metahub.space/background/large/$it/img" }
+        val worked = url != null && coil.Coil.imageLoader(context).execute(artRequest(context, url)) is coil.request.SuccessResult
+        return (if (worked) url else null).also { artFound[id] = it }
+    }
+
+    /** One request shape, so the cached picture is the one that gets drawn. */
+    fun artRequest(context: android.content.Context, url: String?) = coil.request.ImageRequest.Builder(context).data(url).size(1920, 1080).build()
+
     fun currentSeason(): Pair<String, Int> {
         val c = Calendar.getInstance()
         val month = c.get(Calendar.MONTH)

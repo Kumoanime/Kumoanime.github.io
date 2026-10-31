@@ -1,5 +1,15 @@
 package app.kumo.tv
 
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import android.widget.Toast
@@ -179,22 +189,63 @@ class PosterItem(val key: String, val id: Int, val title: String, val image: Str
 val PosterW = 118.dp
 val PosterH = 170.dp
 
+/** Sits above the poster, or below it when there's no room. */
+private object AbovePoster : PopupPositionProvider {
+    override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
+        val x = anchorBounds.left.coerceIn(16, maxOf(16, windowSize.width - popupContentSize.width - 16))
+        val above = anchorBounds.top - popupContentSize.height - 12
+        return IntOffset(x, if (above >= 12) above else anchorBounds.bottom + 12)
+    }
+}
+
+/** Title, rating and description, after a few seconds on a poster. */
+@Composable
+private fun PosterDock(id: Int) {
+    var media by remember { mutableStateOf<Media?>(null) }
+    LaunchedEffect(id) {
+        delay(2500)
+        media = runCatching { AniList.media(id) }.getOrNull()
+    }
+    val m = media ?: return
+    Popup(popupPositionProvider = AbovePoster, properties = PopupProperties(focusable = false)) {
+        var shown by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) { shown = true }
+        val fade by animateFloatAsState(if (shown) 1f else 0f, tween(180), label = "dock")
+        Column(
+            Modifier.width(340.dp).graphicsLayer { alpha = fade }.background(Color(0xF716161C), RoundedCornerShape(16.dp)).padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            KText(m.title, 16, bold = true, lines = 2)
+            KText(m.metaLine(), 12, Orange, lines = 1)
+            KText(m.synopsis ?: "No description yet.", 12, Color(0xFFD5D5DB), lines = 5)
+        }
+    }
+}
+
 @Composable
 fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val rating = item.rating ?: AniList.ratings[item.id]
-    Column(modifier.width(PosterW)) {
+    var focused by remember { mutableStateOf(false) }
+    Store.version  // Adds or removes the tick when Watching changes.
+    val watching = Store.inWatchlist("#/a/${item.id}")
+    if (focused) PosterDock(item.id)
+    Column(modifier.width(PosterW).onFocusChanged { focused = it.hasFocus }) {
         Tile(
             Modifier.width(PosterW).height(PosterH),
             focusKey = item.key,
             background = Surface,
-            onFocused = { item.hero?.let { HomeData.heroTarget = it } },
+            onFocused = { item.hero?.let { HomeData.heroTarget = it; HomeData.heroId = item.id } },
             onLongClick = { posterMenu(context, item) },
             onClick = { Nav.push(Route.Show(item.id, item.ep, choose = item.ep != null)) },
         ) {
             if (item.image != null) AsyncImage(item.image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else KText(item.title, 13, bold = true, modifier = Modifier.padding(8.dp))
             item.pct?.let { Bar(it, Modifier.align(Alignment.BottomStart)) }
+            if (watching) Box(
+                Modifier.align(Alignment.TopStart).padding(5.dp).size(19.dp).clip(RoundedCornerShape(10.dp)).background(Orange),
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Filled.Check, "In Watching", Modifier.size(13.dp), tint = Color.Black) }
             if (rating != null) Row(
                 Modifier.align(Alignment.TopEnd).padding(5.dp).clip(RoundedCornerShape(7.dp)).background(Color(0xCC000000)).padding(horizontal = 5.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),

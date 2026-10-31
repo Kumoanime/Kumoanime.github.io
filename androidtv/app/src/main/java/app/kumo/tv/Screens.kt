@@ -1,6 +1,5 @@
 package app.kumo.tv
 
-import coil.request.ImageRequest
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -109,6 +108,7 @@ object HomeData {
     var moving = false
     var aired by mutableStateOf<List<AniList.Aired>>(emptyList())
     var heroTarget by mutableStateOf<Hero?>(null)
+    var heroId by mutableIntStateOf(0)
 
     suspend fun load() {
         if (rows.isNotEmpty()) return
@@ -359,8 +359,15 @@ private fun rememberShownHero(): Hero? {
 // These two read the hero on their own, so changing poster only redraws them.
 @Composable
 private fun HomeBackdrop() {
-    val shown = rememberShownHero()
-    Crossfade(shown?.image, animationSpec = tween(320), label = "backdrop") { image -> Backdrop(image, 0.75f) }
+    val context = LocalContext.current
+    val hero = HomeData.heroTarget ?: HomeData.rows.firstOrNull()?.items?.firstOrNull()?.hero()
+    val id = HomeData.heroId.takeIf { it != 0 } ?: HomeData.rows.firstOrNull()?.items?.firstOrNull()?.id ?: 0
+    var image by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(id, hero?.image) {
+        delay(220)
+        image = AniList.art(context, id) ?: hero?.image
+    }
+    Crossfade(image, animationSpec = tween(320), label = "backdrop") { Backdrop(it, 0.75f) }
 }
 
 @Composable
@@ -657,14 +664,19 @@ fun SettingsScreen() {
 
 /** Dimmed show art behind the whole screen. */
 @Composable
-private fun Backdrop(m: Media) = Backdrop(m.banner ?: m.cover, 0.55f)
+private fun Backdrop(m: Media) {
+    val context = LocalContext.current
+    var image by remember(m.id) { mutableStateOf(m.banner ?: m.cover) }
+    LaunchedEffect(m.id) { AniList.art(context, m.id)?.let { image = it } }
+    Crossfade(image, animationSpec = tween(320), label = "show art") { Backdrop(it, 0.55f) }
+}
 
 @Composable
 private fun Backdrop(image: String?, strength: Float) {
     if (image == null) return
     val context = LocalContext.current
-    // Half size and painted with alpha directly: a full screen layer is what slows this TV down.
-    val request = remember(image) { ImageRequest.Builder(context).data(image).size(960, 540).build() }
+    // Painted with alpha directly: a full screen layer is what slows this TV down.
+    val request = remember(image) { AniList.artRequest(context, image) }
     AsyncImage(request, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = strength)
     Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to Color.Black, 0.7f to Color(0x66000000), 1f to Color.Transparent)))
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.25f to Color.Transparent, 0.85f to Color.Black)))
