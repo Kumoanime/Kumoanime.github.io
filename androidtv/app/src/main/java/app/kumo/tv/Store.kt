@@ -72,6 +72,14 @@ object Store {
         addonVersion++
     }
 
+    // ---- bell ----
+    private val pressedNews get() = sp.getStringSet("pressedNews", emptySet()) ?: emptySet()
+    fun newsPressed(id: Int, ep: Int) = "$id:$ep" in pressedNews
+    fun pressNews(id: Int, ep: Int) {
+        sp.edit().putStringSet("pressedNews", pressedNews + "$id:$ep").apply()
+        version++
+    }
+
     // ---- watching ----
     fun inWatchlist(route: String) = watchlist.has(route)
     fun toggleWatch(route: String, title: String, poster: String?) {

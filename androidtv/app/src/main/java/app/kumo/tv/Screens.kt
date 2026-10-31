@@ -202,10 +202,11 @@ fun TabsScreen() {
             ) { f ->
                 Icon(Icons.Filled.Notifications, "New episodes", Modifier.align(Alignment.Center).size(22.dp), tint = if (f) Color.Black else Color.White)
             }
-            if (fresh.isNotEmpty()) Box(
+            val unread = fresh.count { !Store.newsPressed(it.media.id, it.episode) }
+            if (unread > 0) Box(
                 Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-3).dp).size(18.dp).clip(RoundedCornerShape(9.dp)).background(Orange),
                 contentAlignment = Alignment.Center,
-            ) { KText(fresh.size.toString(), 10, Color.Black, bold = true) }
+            ) { KText(unread.toString(), 10, Color.Black, bold = true) }
         }
         if (news) {
             LaunchedEffect(Unit) { withFrameNanos { }; runCatching { firstNews.requestFocus() } }
@@ -224,12 +225,14 @@ fun TabsScreen() {
                         Tile(
                             Modifier.fillMaxWidth(), focusKey = "news:${a.media.id}", requester = if (i == 0) firstNews else null, radius = 12.dp, grow = 1f, background = Surface,
                             onClick = {
+                                Store.pressNews(a.media.id, a.episode)
                                 closeNews()
                                 Nav.lastFocus = "bell"
                                 Nav.push(Route.Show(a.media.id, a.episode))
                             },
                         ) {
-                            Row(Modifier.padding(8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            // Dimmed once pressed, so it reads as already opened.
+                            Row(Modifier.alpha(if (Store.newsPressed(a.media.id, a.episode)) 0.4f else 1f).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 AsyncImage(a.media.cover, null, Modifier.size(40.dp, 56.dp).clip(RoundedCornerShape(6.dp)), contentScale = ContentScale.Crop)
                                 Column {
                                     KText(a.media.title, 13, bold = true, lines = 1)
