@@ -167,8 +167,6 @@ fun HomeScreen() {
         HomeData.aired.filter { Store.percent(it.media.route, it.episode) <= 0.92f }.distinctBy { it.media.id }
     }
     if (HomeData.rows.isEmpty()) { Centered(if (HomeData.error) "Couldn't reach AniList. Check the connection." else "Loading…"); return }
-    val firstKey = if (cont.isNotEmpty()) "continue:${cont[0].route}" else "home:first"
-    LaunchedEffect(firstKey) { if (Nav.restore == "home:first") Nav.restore = firstKey }
     val freshRow = if (cont.isNotEmpty()) 1 else 0
     val firstListRow = freshRow + if (fresh.isNotEmpty()) 1 else 0
     val rowCount = HomeData.rows.size + firstListRow
@@ -206,18 +204,18 @@ fun HomeScreen() {
         if (cont.isNotEmpty()) item(key = "continue") {
             Rail(0, "continue", "Continue watching  ·  hold OK to remove", cont.mapNotNull { c ->
                 val id = routeId(c.route) ?: return@mapNotNull null
-                PosterItem("continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, hero = Hero(c.title, c.poster, c.label, null), onLong = {
+                PosterItem(if (c === cont.first()) "home:first" else "continue:${c.route}", id, c.title, c.poster, c.label, pct = c.pct, ep = c.ep ?: 1, hero = Hero(c.title, c.poster, c.label, null), onLong = {
                     confirm(context, "Remove ${c.title} from Continue watching?", "Remove") { Store.hideFromContinue(c.route); Nav.restore = "tab:0" }
                 })
             })
         }
         if (fresh.isNotEmpty()) item(key = "fresh") {
             Rail(freshRow, "fresh", "New episodes", fresh.map { a ->
-                PosterItem("fresh:${a.media.id}", a.media.id, a.media.title, a.media.cover, "Episode ${a.episode}", ep = a.episode, hero = a.media.hero())
+                PosterItem(if (cont.isEmpty() && a === fresh.first()) "home:first" else "fresh:${a.media.id}", a.media.id, a.media.title, a.media.cover, "Episode ${a.episode}", ep = a.episode, hero = a.media.hero())
             })
         }
         itemsIndexed(HomeData.rows, key = { _, r -> r.key }) { i, r ->
-            Rail(i + firstListRow, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
+            Rail(i + firstListRow, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (firstListRow == 0 && i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
         }
     }
     }
