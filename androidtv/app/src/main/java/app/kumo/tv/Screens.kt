@@ -4,6 +4,7 @@ import android.view.KeyEvent as NativeKey
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,7 +37,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
@@ -82,10 +85,11 @@ object HomeData {
 
 private val TabNames = listOf("Home", "Search", "Watching", "Add-ons", "Phone setup", "Account")
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun TabsScreen() {
     Row(Modifier.fillMaxSize()) {
-        Column(Modifier.width(132.dp).fillMaxHeight().background(Color(0xFF0D0D10)).padding(horizontal = 12.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.width(156.dp).fillMaxHeight().background(Color(0xFF0D0D10)).padding(horizontal = 12.dp, vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             KText("KUMO", 22, Orange, bold = true, modifier = Modifier.padding(start = 8.dp, bottom = 16.dp))
             TabNames.forEachIndexed { i, name ->
                 Tile(Modifier.fillMaxWidth(), focusKey = "tab:$i", radius = 8.dp, grow = 1.02f, background = if (HomeData.tab == i) Raise else Color.Transparent, onFocused = { HomeData.tab = i }, onClick = {}) {
@@ -93,7 +97,12 @@ fun TabsScreen() {
                 }
             }
         }
-        Box(Modifier.weight(1f).fillMaxHeight()) {
+        // Only Left leaves a tab's content. Up and Down stop at the edge of a list.
+        Box(
+            Modifier.weight(1f).fillMaxHeight().focusProperties {
+                exit = { d -> if (d == FocusDirection.Up || d == FocusDirection.Down) FocusRequester.Cancel else FocusRequester.Default }
+            }.focusGroup(),
+        ) {
             when (HomeData.tab) {
                 0 -> HomeScreen()
                 1 -> SearchScreen()
