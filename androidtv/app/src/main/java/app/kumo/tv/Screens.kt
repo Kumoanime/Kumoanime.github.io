@@ -297,6 +297,7 @@ fun TabsScreen() {
         if (!open) runCatching { dock[HomeData.tab].requestFocus() }
         else { HomeData.tab = 0; runCatching { dock[0].requestFocus() } }
     }
+    BackHandler(open && HomeData.tab == 0) { (context as? MainActivity)?.shutDown() }
     BackHandler(news) { closeNews() }
     BackHandler(account) { closeAccount() }
 }

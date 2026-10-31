@@ -1,5 +1,7 @@
 package app.kumo.tv
 
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import android.app.Application
 import android.os.Bundle
 import android.widget.Toast
@@ -79,6 +81,7 @@ class MainActivity : ComponentActivity() {
                         is Route.Player -> PlayerScreen(r.session)
                         Route.Addons -> AddonsScreen()
                     }
+                    if (!Splash.done) SplashScreen()
                 }
             }
         }
@@ -89,6 +92,7 @@ class MainActivity : ComponentActivity() {
      * an item that isn't on screen fires later and pulls focus away.
      */
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (!Splash.done) return true
         if (event.action == android.view.KeyEvent.ACTION_DOWN) {
             if (event.repeatCount == 0) android.util.Log.d("KumoKeys", "press ${android.view.KeyEvent.keyCodeToString(event.keyCode)} device ${event.deviceId} on ${Nav.stack.last()::class.simpleName} at ${Nav.lastFocus} tab ${HomeData.tab}")
             Nav.restore = null
@@ -96,6 +100,20 @@ class MainActivity : ComponentActivity() {
             if (event.keyCode in android.view.KeyEvent.KEYCODE_DPAD_UP..android.view.KeyEvent.KEYCODE_DPAD_RIGHT) Nav.moveAt = System.currentTimeMillis()
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private var leaving = false
+
+    /** Saves to the account, then ends the app for real so nothing keeps running. */
+    fun shutDown() {
+        if (leaving) return
+        leaving = true
+        lifecycleScope.launch {
+            withTimeoutOrNull(1500) { runCatching { Store.sync() } }
+            finishAndRemoveTask()
+            delay(300)
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
     }
 
     override fun onNewIntent(intent: android.content.Intent) {
