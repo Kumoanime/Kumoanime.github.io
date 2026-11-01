@@ -46,21 +46,13 @@ object Addons {
         add(Candidate("anilist:${ids.anilist}:$ep", true))
     }
 
-    private suspend fun streamsFrom(a: Addon, ids: ShowIds, ep: Int, movie: Boolean): List<Stream> {
-        val spec = a.spec("stream") ?: return emptyList()
-        // Releases are often filed under only one of a show's ids, so ask with all of them.
-        val found = coroutineScope {
-            candidates(ids, ep, movie).filter { a.handles("stream", it.id) }.take(3).map { c ->
-                async {
-                    val type = if (movie) "movie" else if (c.anime && "anime" in spec.first) "anime" else "series"
-                    if (spec.first.isNotEmpty() && type !in spec.first) return@async emptyList()
-                    val r = runCatching { Net.get(resourceUrl(a.url, "stream/${enc(type)}/${enc(c.id)}.json")) }.getOrNull()
-                    if (r == null || !r.ok) return@async emptyList()
-                    runCatching { JSONObject(r.body).optJSONArray("streams").objects().map(Stream::parse) }.getOrDefault(emptyList())
-                }
-            }.flatMap { it.await() }
-        }
-        return found.distinctBy { it.filename?.lowercase() ?: it.url ?: it.title }
+    /** Releases are often filed under only one of a show's ids, so each id gets its own request. */
+    private suspend fun streamsFor(a: Addon, spec: Pair<List<String>, List<String>?>, c: Candidate, movie: Boolean): List<Stream> {
+        val type = if (movie) "movie" else if (c.anime && "anime" in spec.first) "anime" else "series"
+        if (spec.first.isNotEmpty() && type !in spec.first) return emptyList()
+        val r = runCatching { Net.get(resourceUrl(a.url, "stream/${enc(type)}/${enc(c.id)}.json")) }.getOrNull()
+        if (r == null || !r.ok) return emptyList()
+        return runCatching { JSONObject(r.body).optJSONArray("streams").objects().map(Stream::parse) }.getOrDefault(emptyList())
     }
 
     /** Subtitles from every subtitle add-on, English first. */
@@ -85,7 +77,15 @@ object Addons {
     fun streams(addons: List<Addon>, ids: ShowIds, ep: Int, movie: Boolean): Flow<Pair<Addon, List<Stream>>> = channelFlow {
         coroutineScope {
             addons.filter { it.enabled }.forEach { a ->
-                launch { send(a to streamsFrom(a, ids, ep, movie).filter { !it.url.isNullOrEmpty() }) }
+                val spec = a.spec("stream") ?: return@forEach
+                val seen = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+                // Sent as each id answers, so one slow id doesn't hold back the rest.
+                candidates(ids, ep, movie).filter { a.handles("stream", it.id) }.take(3).forEach { c ->
+                    launch {
+                        val fresh = streamsFor(a, spec, c, movie).filter { !it.url.isNullOrEmpty() && seen.add(it.filename?.lowercase() ?: it.url!!) }
+                        if (fresh.isNotEmpty()) send(a to fresh)
+                    }
+                }
             }
         }
     }

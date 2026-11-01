@@ -960,7 +960,7 @@ private class EpisodeSources {
     /** Waits for every add-on, or 4 seconds if a cached source of this type is already here. */
     suspend fun ready(kind: Audio) {
         val began = System.currentTimeMillis()
-        while (!done && !(rows.any { it.audio == kind && StreamLogic.isCached(it.stream) } && System.currentTimeMillis() - began > 4000)) delay(200)
+        while (!done && !(rows.any { it.audio == kind } && System.currentTimeMillis() - began > 4000)) delay(200)
     }
 }
 
@@ -977,7 +977,7 @@ private fun rememberSources(id: Int, ep: Int): EpisodeSources {
         Addons.streams(Store.addons, ids, ep, m.isMovie).collect { (addon, list) ->
             list.forEach { s ->
                 val audio = StreamLogic.audio(s)
-                android.util.Log.d("KumoPlay", "source $audio ${"${s.name} | ${s.title} | ${s.filename}".replace('\n', ' ').take(160)}")
+                android.util.Log.d("KumoPlay", "source ${System.currentTimeMillis() % 100000} $audio ${"${s.name} | ${s.title} | ${s.filename}".replace('\n', ' ').take(160)}")
                 sources.rows.add(StreamRow(addon, s, audio, sources.rows.size))
             }
         }
