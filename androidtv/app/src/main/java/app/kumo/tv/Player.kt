@@ -46,6 +46,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -173,6 +175,7 @@ fun PlayerScreen(session: PlaySession) {
     }
     val currentNext by androidx.compose.runtime.rememberUpdatedState(nextSource)
 
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     DisposableEffect(Unit) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
@@ -196,8 +199,19 @@ fun PlayerScreen(session: PlaySession) {
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) { paused = !isPlaying && !player.playWhenReady }
         }
+        // When the TV goes to standby, save the place and let go of the video
+        // decoder and the network. The episode waits, paused, for the TV to wake.
+        val lifecycle = lifecycleOwner.lifecycle
+        val standby = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> { save(); player.pause(); player.stop() }
+                Lifecycle.Event.ON_START -> if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) player.prepare()
+                else -> {}
+            }
+        }
+        lifecycle.addObserver(standby)
         player.addListener(listener)
-        onDispose { save(); player.removeListener(listener); player.release() }
+        onDispose { lifecycle.removeObserver(standby); save(); player.removeListener(listener); player.release() }
     }
 
     // Load the current source, resuming where this episode was left. A source
