@@ -112,17 +112,21 @@ object StreamLogic {
         val t = "${s.name ?: ""} ${s.title ?: ""} ${s.description ?: ""} ${s.filename ?: ""}"
         return when {
             has("(?<![a-z])dub(bed|s)?(?![a-z])|(?<![a-z])dual(?![a-z])", t) -> Audio.DUB
-            has("(?<![a-z])sub(bed|s)?(?![a-z])|soft ?sub|hard ?sub", t) -> Audio.SUB
+            // Most anime releases never say "sub": they name a fansub group or Japanese audio.
+            has("(?<![a-z])sub(bed|s|titles?)?(?![a-z])|soft ?sub|hard ?sub|multi[- ]?subs?|(?<![a-z])e?subs?please|[a-z]subs(?![a-z])|erai-?raws|(?<![a-z])(jpn|jap|japanese)(?![a-z])|\uD83C\uDDEF\uD83C\uDDF5", t) -> Audio.SUB
             else -> Audio.OTHER
         }
     }
+
+    /** This TV has no AV1 decoder, so these are only worth trying last. */
+    private fun isAv1(s: Stream) = has("(?<![a-z0-9])av-?0?1(?![a-z0-9])", "${s.name ?: ""} ${s.title ?: ""} ${s.description ?: ""} ${s.filename ?: ""}")
 
     private fun rank(s: Stream) = if (isCached(s)) 100 else if (isUncached(s)) 10 else 40
 
     fun order(rows: List<StreamRow>, prefer: Audio): List<StreamRow> {
         val audioRank = if (prefer == Audio.DUB) mapOf(Audio.DUB to 0, Audio.OTHER to 1, Audio.SUB to 2)
         else mapOf(Audio.SUB to 0, Audio.OTHER to 1, Audio.DUB to 2)
-        return rows.sortedWith(compareBy<StreamRow> { audioRank[it.audio] }.thenByDescending { rank(it.stream) }.thenBy { it.index })
+        return rows.sortedWith(compareBy<StreamRow> { isAv1(it.stream) }.thenBy { audioRank[it.audio] }.thenByDescending { rank(it.stream) }.thenBy { it.index })
     }
 
     /** Cached sources in order, or everything when nothing is cached. */

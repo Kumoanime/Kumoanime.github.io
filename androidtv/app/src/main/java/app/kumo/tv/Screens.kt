@@ -975,7 +975,11 @@ private fun rememberSources(id: Int, ep: Int): EpisodeSources {
         sources.ids = ids
         launch { sources.subtitles = Addons.subtitles(Store.addons, ids, ep, m.isMovie) }
         Addons.streams(Store.addons, ids, ep, m.isMovie).collect { (addon, list) ->
-            list.forEach { s -> sources.rows.add(StreamRow(addon, s, StreamLogic.audio(s), sources.rows.size)) }
+            list.forEach { s ->
+                val audio = StreamLogic.audio(s)
+                android.util.Log.d("KumoPlay", "source $audio ${"${s.name} | ${s.title} | ${s.filename}".replace('\n', ' ').take(160)}")
+                sources.rows.add(StreamRow(addon, s, audio, sources.rows.size))
+            }
         }
         sources.done = true
     }
