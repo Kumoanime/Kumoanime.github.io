@@ -132,7 +132,9 @@ object StreamLogic {
     /** Cached sources in order, or everything when nothing is cached. */
     fun autoCandidates(rows: List<StreamRow>, prefer: Audio): List<StreamRow> {
         val ordered = order(rows, prefer)
-        val cached = ordered.filter { isCached(it.stream) }
-        return cached.ifEmpty { ordered.filter { !isUncached(it.stream) }.ifEmpty { ordered } }
+        // A cached AV1 file can't play here, so it mustn't hide the files that can.
+        val playable = ordered.filterNot { isAv1(it.stream) }
+        val cached = playable.filter { isCached(it.stream) }
+        return cached.ifEmpty { playable.filter { !isUncached(it.stream) }.ifEmpty { playable } }.ifEmpty { ordered }
     }
 }
