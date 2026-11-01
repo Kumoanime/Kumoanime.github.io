@@ -932,6 +932,10 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
                     if (count > 0) KButton(if (m.isMovie) "Play" else "Play episode $next", focusKey = "show:play", solid = true) { LastFailure.message = null; choosing = next }
                     KButton(if (Store.inWatchlist(m.route)) "✓ Watching" else "+ Watching", focusKey = "show:list") { Store.toggleWatch(m.route, m.title, m.cover) }
                     if (!m.isMovie && count > 0) KButton(if (marking) "Done marking" else "Mark watched") { marking = !marking }
+                    if (marking) {
+                        val allSeen = remember(v, count) { (1..count).all { Store.percent(m.route, it) > 0.92f } }
+                        KButton(if (allSeen) "Unmark all" else "Mark all") { Store.markAll(m.route, 1..count, !allSeen, m.title, m.cover) }
+                    }
                     m.trailer?.let { trailer -> KButton("▶ Trailer", focusKey = "show:trailer") { openTrailer(context, trailer) } }
                     KButton("Related", focusKey = "show:related") { Nav.push(Route.Related(m.id)) }
                 }

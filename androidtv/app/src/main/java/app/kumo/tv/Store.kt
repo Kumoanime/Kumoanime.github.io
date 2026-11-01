@@ -116,7 +116,10 @@ object Store {
     }
 
     private fun obj(key: String) = runCatching { JSONObject(sp.getString(key, "{}") ?: "{}") }.getOrDefault(JSONObject())
+    private var batching = false
+
     private fun persist() {
+        if (batching) return
         sp.edit().putString("progress", progress.toString()).putString("watchlist", watchlist.toString()).putString("removed", removed.toString()).apply()
         version++
     }
@@ -244,6 +247,13 @@ object Store {
             it.put("t", 0).put("hidden", true).put("updated", now())
             persist(); scheduleSync()
         }
+    }
+
+    /** Saved once at the end, as a long series would otherwise rewrite everything per episode. */
+    fun markAll(route: String, eps: IntRange, on: Boolean, title: String, poster: String?) {
+        batching = true
+        try { eps.forEach { markWatched(route, it, on, title, poster) } } finally { batching = false }
+        persist(); scheduleSync()
     }
 
     fun hideFromContinue(route: String) {
