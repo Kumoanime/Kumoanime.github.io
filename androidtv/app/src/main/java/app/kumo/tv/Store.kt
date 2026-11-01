@@ -12,8 +12,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -105,6 +107,8 @@ object Store {
                 addons.add(Addon(it.getString("url"), it.getJSONObject("manifest"), it.optBoolean("enabled", true)))
             }
         }
+        knownAddons = addons.map { it.url }.toSet()
+        goneAddons.addAll(sp.getStringSet("goneAddons", emptySet()).orEmpty())
         accountEmail = sp.getString("email", null)
         aniListName = sp.getString("anilistName", null)
     }
@@ -115,11 +119,41 @@ object Store {
         version++
     }
 
-    fun saveAddons() {
+    // Add-ons removed on this TV, kept as hashes so an account's copy can't bring them back
+    // and the link itself isn't stored any longer than it has to be.
+    private var knownAddons = emptySet<String>()
+    private val goneAddons = HashSet<String>()
+    private fun addonHash(url: String) = MessageDigest.getInstance("SHA-256").digest(url.toByteArray())
+        .joinToString("") { "%02x".format(it) }
+
+    private fun storeAddons() {
+        val urls = addons.map { it.url }.toSet()
+        (knownAddons - urls).forEach { goneAddons.add(addonHash(it)) }
+        urls.forEach { goneAddons.remove(addonHash(it)) }
+        knownAddons = urls
         val a = JSONArray()
         addons.forEach { a.put(it.toJson()) }
-        sp.edit().putString("addons", a.toString()).apply()
+        sp.edit().putString("addons", a.toString()).putStringSet("goneAddons", HashSet(goneAddons)).apply()
         addonVersion++
+    }
+
+    fun saveAddons() {
+        storeAddons()
+        scheduleSync()
+    }
+
+    /** Add-ons saved with the account join the ones on this TV. Nothing on the TV is removed. */
+    private fun mergeAddons(cloud: JSONObject?) {
+        var added = false
+        cloud?.optJSONArray("list")?.objects()?.forEach { o ->
+            val url = o.str("url") ?: return@forEach
+            val manifest = o.optJSONObject("manifest") ?: return@forEach
+            if (addonHash(url) !in goneAddons && addons.none { it.url == url }) {
+                addons.add(Addon(url, manifest, o.optBoolean("enabled", true)))
+                added = true
+            }
+        }
+        if (added) storeAddons()
     }
 
     // ---- bell ----
@@ -250,6 +284,7 @@ object Store {
     // ---- account: Supabase auth and the user_data table ----
     private const val URL = "https://xaiwuqyudxmypdairyab.supabase.co"
     private const val KEY = "sb_publishable_XH_vVGedmDfC0KTNUqpWbA_q35TWZXL"
+    private const val ADDONS_KEY = "_addons"
     private val anon get() = mapOf("apikey" to KEY)
 
     private fun keep(o: JSONObject) {
@@ -306,14 +341,20 @@ object Store {
         runCatching {
             val r = Net.get("$URL/rest/v1/user_data?user_id=eq.$user&select=watchlist,progress", auth)
             if (!r.ok) { syncState = fail; return }
-            merge(JSONArray(r.body).optJSONObject(0))
+            val row = JSONArray(r.body).optJSONObject(0)
+            // The add-ons travel inside the progress column under a key of their own.
+            val cloud = row?.optJSONObject("progress")?.remove(ADDONS_KEY) as? JSONObject
+            withContext(Dispatchers.Main) { mergeAddons(cloud) }
+            merge(row)
             push(user, auth)
         }.onFailure { syncState = fail }
     }
 
     private suspend fun push(user: String, auth: Map<String, String>) {
         val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
-        val row = JSONObject().put("user_id", user).put("watchlist", watchlist).put("progress", progress).put("updated_at", iso)
+        val list = withContext(Dispatchers.Main) { JSONArray().also { a -> addons.forEach { a.put(it.toJson()) } } }
+        val saved = JSONObject(progress.toString()).put(ADDONS_KEY, JSONObject().put("list", list))
+        val row = JSONObject().put("user_id", user).put("watchlist", watchlist).put("progress", saved).put("updated_at", iso)
         val r = Net.post("$URL/rest/v1/user_data?on_conflict=user_id", JSONArray().put(row).toString(), auth + ("Prefer" to "resolution=merge-duplicates"))
         syncState = if (r.ok) "Synced" else "Couldn't sync. Check the connection."
     }
