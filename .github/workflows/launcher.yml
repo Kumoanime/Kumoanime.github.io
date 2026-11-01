@@ -74,6 +74,25 @@ jobs:
           """
           open(p,'w').write(t.replace(mark,add+mark))
           PY
+      - name: Change the wallpaper every 10 seconds
+        run: |
+          python3 - <<'PY'
+          p='launcher/app/src/main/java/com/gathin/tvhome/WallpaperPlayer.java'
+          t=open(p).read()
+          a='interval = config.wallpaperRotationMinutes * 60_000L;'
+          assert t.count(a)==1
+          open(p,'w').write(t.replace(a,'interval = config.wallpaperRotationMinutes > 0 ? 10_000L : 0L;'))
+          p='launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java'
+          t=open(p).read()
+          for a,b in [
+              ('    private final Runnable minuteTick = new Runnable() {','    private final Runnable wallpaperTick = new Runnable() {\n        @Override public void run() {\n            wallpaperPlayer.update();\n            handler.postDelayed(this, 10_000L);\n        }\n    };\n\n    private final Runnable minuteTick = new Runnable() {'),
+              ('        handler.postDelayed(minuteTick, MINUTE_MS);\n','        handler.postDelayed(minuteTick, MINUTE_MS);\n        handler.postDelayed(wallpaperTick, 10_000L);\n'),
+              ('        handler.removeCallbacks(minuteTick);\n','        handler.removeCallbacks(minuteTick);\n        handler.removeCallbacks(wallpaperTick);\n'),
+          ]:
+              assert t.count(a)==1,a
+              t=t.replace(a,b)
+          open(p,'w').write(t)
+          PY
       - name: Build
         working-directory: launcher
         run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon --console=plain
