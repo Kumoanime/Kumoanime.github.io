@@ -98,7 +98,28 @@ import kotlinx.coroutines.launch
 
 private fun routeId(route: String) = route.substringAfterLast('/').toIntOrNull()
 
-class HomeRow(val key: String, val title: String, val items: List<Media>)
+class HomeRow(val key: String, val title: String, val items: List<Media>, val load: suspend (Int) -> List<Media>)
+
+/** The full list behind a Home row. Kept here so coming back from a show keeps the place. */
+class MoreList(val row: HomeRow) {
+    val items = mutableStateListOf<Media>().apply { addAll(row.items) }
+    val grid = LazyGridState()
+    private var page = 1
+    private var loading = false
+    private var done = false
+
+    suspend fun next() {
+        if (loading || done) return
+        loading = true
+        runCatching { row.load(page + 1) }.onSuccess { found ->
+            page += 1
+            val known = items.mapTo(HashSet()) { it.id }
+            items.addAll(found.filter { known.add(it.id) })
+            if (found.size < 30) done = true
+        }
+        loading = false
+    }
+}
 
 object HomeData {
     val rows = mutableStateListOf<HomeRow>()
@@ -116,6 +137,9 @@ object HomeData {
     var aired by mutableStateOf<List<AniList.Aired>>(emptyList())
     var heroTarget by mutableStateOf<Hero?>(null)
     var heroId by mutableIntStateOf(0)
+    val more = HashMap<String, MoreList>()
+
+    private suspend fun row(key: String, title: String, load: suspend (Int) -> List<Media>) = rows.add(HomeRow(key, title, load(1), load))
 
     suspend fun load() {
         if (rows.isNotEmpty()) return
@@ -123,9 +147,9 @@ object HomeData {
         val (season, year) = AniList.currentSeason()
         val pretty = season.lowercase().replaceFirstChar { it.uppercase() }
         runCatching {
-            rows.add(HomeRow("trending", "Trending now", AniList.list("TRENDING_DESC", status = "RELEASING")))
-            rows.add(HomeRow("season", "$pretty $year", AniList.list("POPULARITY_DESC", season = season, year = year)))
-            rows.add(HomeRow("top", "All-time favourites", AniList.list("SCORE_DESC", status = "FINISHED")))
+            row("trending", "Trending now") { AniList.list("TRENDING_DESC", status = "RELEASING", page = it) }
+            row("season", "$pretty $year") { AniList.list("POPULARITY_DESC", season = season, year = year, page = it) }
+            row("top", "All-time favourites") { AniList.list("SCORE_DESC", status = "FINISHED", page = it) }
         }.onFailure { if (rows.isEmpty()) error = true }
     }
 }
@@ -333,14 +357,19 @@ private fun leftEdge(state: LazyGridState, index: Int) = Modifier.focusPropertie
 }
 
 @Composable
-private fun Rail(row: Int, key: String, title: String, items: List<PosterItem>) {
+private fun Rail(row: Int, key: String, title: String, items: List<PosterItem>, more: Boolean = false) {
     val state = HomeData.rails.getOrPut(key) { LazyListState() }
-    HomeData.rowKeys[row] = items.map { it.key }
+    HomeData.rowKeys[row] = items.map { it.key } + if (more) listOf("$key:more") else emptyList()
     HomeData.rowStates[row] = state
     Column(Modifier.padding(bottom = 14.dp).onFocusChanged { if (it.hasFocus) HomeData.focusedRow = row }) {
         KText(title, 15, bold = true, modifier = Modifier.padding(start = 28.dp, bottom = 6.dp))
         LazyRow(state = state, contentPadding = PaddingValues(horizontal = 28.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             items(items, key = { it.key }) { Poster(it) }
+            if (more) item(key = "more") {
+                Tile(Modifier.size(PosterW, PosterH), focusKey = "$key:more", background = Surface, focusedBackground = Color.White, onClick = { Nav.push(Route.More(key)) }) { f ->
+                    KText("More", 16, if (f) Color.Black else Color.White, bold = true, modifier = Modifier.align(Alignment.Center))
+                }
+            }
         }
     }
 }
@@ -447,7 +476,7 @@ fun HomeScreen() {
             })
         }
         itemsIndexed(HomeData.rows, key = { _, r -> r.key }) { i, r ->
-            Rail(i + firstListRow, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (firstListRow == 0 && i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") })
+            Rail(i + firstListRow, r.key, r.title, r.items.mapIndexed { n, m -> m.poster(if (firstListRow == 0 && i == 0 && n == 0) "home:first" else "${r.key}:${m.id}") }, more = true)
         }
     }
     }
@@ -754,6 +783,24 @@ fun LinkAniListScreen() {
             else KText("Scan the code with your phone to start.", 13, Muted)
         }
         if (name == null) PhoneQr(PairMode.ANILIST, 220.dp, "Your phone needs to be on the same WiFi as this TV.")
+    }
+}
+
+@Composable
+fun MoreScreen(key: String) {
+    val row = HomeData.rows.firstOrNull { it.key == key } ?: run { Centered("Nothing here."); return }
+    val data = HomeData.more.getOrPut(key) { MoreList(row) }
+    LaunchedEffect(Unit) { if (Nav.restore == null) Nav.restore = data.items.firstOrNull()?.let { "more:${it.id}" } }
+    LaunchedEffect(data) {
+        snapshotFlow { data.grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collectLatest { last ->
+            if (last >= data.items.size - 6) data.next()
+        }
+    }
+    Column(Modifier.fillMaxSize().padding(start = 28.dp, end = 28.dp, top = 24.dp)) {
+        KText(row.title, 26, bold = true, modifier = Modifier.padding(bottom = 12.dp))
+        LazyVerticalGrid(GridCells.Adaptive(PosterW + 14.dp), state = data.grid, contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            items(data.items, key = { it.id }) { m -> Poster(m.poster("more:${m.id}")) }
+        }
     }
 }
 

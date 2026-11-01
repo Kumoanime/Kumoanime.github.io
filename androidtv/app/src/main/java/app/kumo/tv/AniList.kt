@@ -20,9 +20,9 @@ object AniList {
         return JSONObject(r.body).optJSONObject("data") ?: throw Exception("AniList didn't answer")
     }
 
-    suspend fun list(sort: String, season: String? = null, year: Int? = null, status: String? = null, search: String? = null): List<Media> {
-        val q = "query(\$sort:[MediaSort],\$season:MediaSeason,\$year:Int,\$status:MediaStatus,\$search:String){Page(perPage:30){media(type:ANIME,isAdult:false,sort:\$sort,season:\$season,seasonYear:\$year,status:\$status,search:\$search){$FIELDS}}}"
-        val v = JSONObject().put("sort", JSONArray().put(sort))
+    suspend fun list(sort: String, season: String? = null, year: Int? = null, status: String? = null, search: String? = null, page: Int = 1): List<Media> {
+        val q = "query(\$page:Int,\$sort:[MediaSort],\$season:MediaSeason,\$year:Int,\$status:MediaStatus,\$search:String){Page(page:\$page,perPage:30){media(type:ANIME,isAdult:false,sort:\$sort,season:\$season,seasonYear:\$year,status:\$status,search:\$search){$FIELDS}}}"
+        val v = JSONObject().put("sort", JSONArray().put(sort)).put("page", page)
         season?.let { v.put("season", it) }
         year?.let { v.put("year", it) }
         status?.let { v.put("status", it) }

@@ -49,6 +49,7 @@ sealed class Route {
     data object Stats : Route()
     data object LinkAniList : Route()
     data class Related(val id: Int) : Route()
+    data class More(val key: String) : Route()
 }
 
 object Nav {
@@ -87,6 +88,7 @@ class MainActivity : ComponentActivity() {
                         Route.Stats -> StatsScreen()
                         Route.LinkAniList -> LinkAniListScreen()
                         is Route.Related -> RelatedScreen(r.id)
+                        is Route.More -> MoreScreen(r.key)
                     }
                     if (!Splash.done) SplashScreen()
                 }
