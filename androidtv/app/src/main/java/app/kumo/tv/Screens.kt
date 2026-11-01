@@ -245,21 +245,19 @@ fun TabsScreen() {
                 if (email != null) {
                     KText(email, 15, bold = true, lines = 1)
                     KText("Watching and progress are saved to your account. ${Store.syncState}", 12, Muted)
-                } else PhoneQr(PairMode.LOGIN, 190.dp, "Scan to log in from your phone. It needs to be on the same WiFi as this TV.")
-            }
-            // The first button stays in place so logging in doesn't lose focus.
-            Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                KButton(if (email != null) "Sync now" else "Log in with the remote", focusKey = "acct:first", requester = firstAccount) {
-                    if (email != null) scope.launch { Store.sync() }
-                    else askText(context, "Email") { e ->
-                        if (e.isEmpty()) return@askText
-                        askText(context, "Password", password = true) { p ->
-                            scope.launch { runCatching { Store.login(e, p) }.onFailure { Toast.makeText(context, it.message ?: "Couldn't log in", Toast.LENGTH_LONG).show() } }
-                        }
+                } else {
+                    // Holds focus only: the panel needs something focused while the QR shows.
+                    Tile(requester = firstAccount, grow = 1f, outline = false, onClick = {}) {
+                        PhoneQr(PairMode.LOGIN, 190.dp, "Scan to log in from your phone. It needs to be on the same WiFi as this TV.")
                     }
                 }
-                if (email != null) KButton("Log out") { closeAccount(); Store.logout() }
             }
+            if (email != null) Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                KButton("Sync now", focusKey = "acct:first", requester = firstAccount) { scope.launch { Store.sync() } }
+                KButton("Log out") { closeAccount(); Store.logout() }
+            }
+            // A phone login removes the QR that had focus, so hand it to Sync now.
+            LaunchedEffect(email != null) { withFrameNanos { }; runCatching { firstAccount.requestFocus() } }
         }
         if (news) TopPanel(firstNews, 330.dp) {
                 Row(Modifier.fillMaxWidth().padding(start = 8.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -615,30 +613,18 @@ fun AddonsScreen() {
     val scope = rememberCoroutineScope()
     val v = Store.addonVersion
     val list = remember(v) { Store.addons.toList() }
-    LaunchedEffect(Unit) { if (Nav.restore == null) Nav.restore = "addons:add" }
+    LaunchedEffect(Unit) { if (Nav.restore == null) Nav.restore = if (list.isEmpty()) "addons:qr" else "addons:first" }
     Row(Modifier.fillMaxSize()) {
     LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(40.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { KText("Add-ons", 26, bold = true, modifier = Modifier.padding(bottom = 6.dp)) }
-        item {
-            KButton("Add an add-on link", focusKey = "addons:add", solid = true) {
-                askText(context, "Paste or type the manifest link") { url ->
-                    if (url.isEmpty()) return@askText
-                    scope.launch {
-                        runCatching { Addons.install(url) }
-                            .onSuccess { a -> Store.addons.removeAll { it.url == a.url }; Store.addons.add(a); Store.saveAddons(); Toast.makeText(context, "Added ${a.name}", Toast.LENGTH_SHORT).show() }
-                            .onFailure { Toast.makeText(context, it.message ?: "Couldn't add that", Toast.LENGTH_LONG).show() }
-                    }
-                }
-            }
-        }
         if (list.isEmpty()) item { KText("Add-ons supply the episodes Kumo can play.", 14, Muted, modifier = Modifier.padding(top = 8.dp)) }
-        items(list, key = { it.url }) { a ->
-            Tile(Modifier.fillMaxWidth(), radius = 8.dp, grow = 1.01f, background = Surface, onClick = {
-                pick(context, a.name, listOf(if (a.enabled) "Turn off" else "Turn on", "Remove")) { i ->
-                    if (i == 0) { a.enabled = !a.enabled; Store.saveAddons() }
+        itemsIndexed(list, key = { _, a -> a.url }) { i, a ->
+            Tile(Modifier.fillMaxWidth(), focusKey = if (i == 0) "addons:first" else null, radius = 8.dp, grow = 1.01f, background = Surface, onClick = {
+                pick(context, a.name, listOf(if (a.enabled) "Turn off" else "Turn on", "Remove")) { choice ->
+                    if (choice == 0) { a.enabled = !a.enabled; Store.saveAddons() }
                     else {
                         // Move focus first, or it falls back to the side menu and changes tab.
-                        Nav.restore = "addons:add"
+                        Nav.restore = "addons:qr"
                         scope.launch { withFrameNanos { }; withFrameNanos { }; Store.addons.remove(a); Store.saveAddons() }
                     }
                 }
@@ -652,7 +638,10 @@ fun AddonsScreen() {
     }
     Column(Modifier.width(290.dp).padding(top = 40.dp, end = 40.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         KText("Add from your phone", 16, bold = true)
-        PhoneQr(PairMode.ADDONS, 220.dp, "Scan, then paste your add-on links. Your phone needs to be on the same WiFi as this TV.")
+        // Holds focus only: with no add-ons listed, nothing else on this page can take it.
+        Tile(focusKey = "addons:qr", grow = 1f, outline = false, onClick = {}) {
+            PhoneQr(PairMode.ADDONS, 220.dp, "Scan, then paste your add-on links. Your phone needs to be on the same WiFi as this TV.")
+        }
     }
     }
 }
