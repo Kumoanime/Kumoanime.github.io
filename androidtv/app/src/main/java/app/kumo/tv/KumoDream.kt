@@ -104,7 +104,7 @@ class KumoDream : DreamService() {
     }
 
     private companion object {
-        const val CHANGE_MS = 60_000L
+        const val CHANGE_MS = 10_000L
         const val FADE_MS = 2_000L
     }
 }
