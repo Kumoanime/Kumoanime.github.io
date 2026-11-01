@@ -192,9 +192,18 @@ fun PlayerScreen(session: PlaySession) {
             override fun onPlayerError(error: PlaybackException) { currentNext("That source didn't play.") }
             override fun onTracksChanged(tracks: Tracks) {
                 if (tracks.isEmpty) return
-                val noVideo = tracks.containsType(C.TRACK_TYPE_VIDEO) && !tracks.isTypeSupported(C.TRACK_TYPE_VIDEO)
-                val noAudio = tracks.containsType(C.TRACK_TYPE_AUDIO) && !tracks.isTypeSupported(C.TRACK_TYPE_AUDIO)
-                if (noVideo) currentNext("This TV can't decode that video.")
+                for (g in tracks.groups) for (i in 0 until g.length) {
+                    val f = g.getTrackFormat(i)
+                    if (g.type == C.TRACK_TYPE_VIDEO || g.type == C.TRACK_TYPE_AUDIO) android.util.Log.d("KumoPlay", "${f.sampleMimeType} ${f.codecs} ${f.width}x${f.height} ${f.frameRate}fps ${f.bitrate}bps support=${g.getTrackSupport(i)}")
+                }
+                // Exceeding the TV's stated limits is only a warning and many such files play.
+                // A real failure ends in onPlayerError or the timeout, which move to the next source.
+                val noVideo = tracks.containsType(C.TRACK_TYPE_VIDEO) && !tracks.isTypeSupported(C.TRACK_TYPE_VIDEO, true)
+                val noAudio = tracks.containsType(C.TRACK_TYPE_AUDIO) && !tracks.isTypeSupported(C.TRACK_TYPE_AUDIO, true)
+                // 10-bit H.264 has no decoder here at all, and trying it can hang on a black screen.
+                val hi10 = tracks.groups.any { g -> g.type == C.TRACK_TYPE_VIDEO && (0 until g.length).all { g.getTrackFormat(it).codecs?.lowercase()?.let { c -> listOf("avc1.6e", "avc1.7a", "avc1.f4").any(c::startsWith) } == true } }
+                if (hi10) currentNext("That video is 10-bit H.264, which this TV can't play.")
+                else if (noVideo) currentNext("This TV can't decode that video.")
                 else if (noAudio) currentNext("This TV can't decode that audio.")
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) { paused = !isPlaying && !player.playWhenReady }
