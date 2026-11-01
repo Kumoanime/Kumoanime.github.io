@@ -3,6 +3,7 @@ package app.kumo.tv
 import android.net.Uri
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
@@ -82,7 +83,14 @@ object Addons {
                 // Sent as each id answers, so one slow id doesn't hold back the rest.
                 candidates(ids, ep, movie).filter { a.handles("stream", it.id) }.take(3).forEach { c ->
                     launch {
-                        val fresh = streamsFor(a, spec, c, movie).filter { !it.url.isNullOrEmpty() && seen.add(it.filename?.lowercase() ?: it.url!!) }
+                        // While an add-on refreshes it answers with a status row, not sources, so ask again.
+                        var list = streamsFor(a, spec, c, movie)
+                        repeat(4) {
+                            if (list.isEmpty() || !list.all(StreamLogic::isStatus)) return@repeat
+                            delay(5_000)
+                            list = streamsFor(a, spec, c, movie)
+                        }
+                        val fresh = list.filter { !StreamLogic.isStatus(it) && !it.url.isNullOrEmpty() && seen.add(it.filename?.lowercase() ?: it.url!!) }
                         if (fresh.isNotEmpty()) send(a to fresh)
                     }
                 }
@@ -93,6 +101,9 @@ object Addons {
 
 object StreamLogic {
     private fun has(pattern: String, text: String) = Regex(pattern, RegexOption.IGNORE_CASE).containsMatchIn(text)
+
+    /** Comet's "working on it" row: it has a link but isn't a video. */
+    fun isStatus(s: Stream) = s.filename == null && s.name?.contains("\uD83D\uDD04") == true
 
     fun isDebrid(s: Stream): Boolean {
         val u = s.url ?: ""
