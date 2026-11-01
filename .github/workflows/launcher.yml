@@ -31,6 +31,48 @@ jobs:
           t=arr(t,'hidden_apps',['com.mediatek.wwtv.tvcenter','com.mitv.gallery','uk.co.freeview.explore','uk.co.freeview.bbc','uk.co.freeview.ch5','uk.co.freeview.itv','uk.co.freeview.stv','uk.co.freeview.amc_horror','uk.co.freeview.ch4_vod'])
           open(p,'w').write(t)
           PY
+      - name: Match the header to the dock
+        run: |
+          python3 - <<'PY'
+          p='launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java'
+          t=open(p).read()
+          mark='        btnSettings.setOnLongClickListener(v -> {\n            showSettingsMenu();'
+          assert t.count(mark)==1
+          add="""        // Kumo TV: the round buttons and the clock area use the dock's colour and edge.
+        int dockTint = (Math.round(cfg.dockOpacity * 2.55f) << 24) | 0x141416;
+        if (btnLibraryTop.getVisibility() == View.VISIBLE) makeIconOnly((TextView) btnLibraryTop);
+        for (View round : new View[] {btnLibraryTop, btnSettings}) {
+            android.graphics.drawable.GradientDrawable plain = new android.graphics.drawable.GradientDrawable();
+            plain.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+            plain.setColor(dockTint);
+            plain.setStroke(Math.round(density), 0x1FFFFFFF);
+            android.graphics.drawable.StateListDrawable states = new android.graphics.drawable.StateListDrawable();
+            states.addState(new int[] {android.R.attr.state_focused}, round.getBackground());
+            states.addState(new int[0], plain);
+            round.setBackground(states);
+        }
+        View headerBlock = findViewById(R.id.leftBlock);
+        android.graphics.drawable.GradientDrawable headerBg = new android.graphics.drawable.GradientDrawable();
+        headerBg.setColor(dockTint);
+        headerBg.setStroke(Math.round(density), 0x1FFFFFFF);
+        headerBg.setCornerRadius(26 * density);
+        headerBlock.setBackground(headerBg);
+        int headerX = Math.round(24 * density), headerY = Math.round(14 * density);
+        headerBlock.setPadding(headerX, headerY, headerX, headerY);
+        RelativeLayout.LayoutParams headerLp = (RelativeLayout.LayoutParams) headerBlock.getLayoutParams();
+        headerLp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+        headerLp.leftMargin = -headerX;
+        headerLp.topMargin = -headerY;
+        headerLp.bottomMargin = -headerY;
+        headerBlock.setLayoutParams(headerLp);
+        View headerDate = findViewById(R.id.date);
+        headerDate.getLayoutParams().width = ViewGroup.LayoutParams.WRAP_CONTENT;
+        LinearLayout.LayoutParams headerDateLp = (LinearLayout.LayoutParams) ((View) headerDate.getParent()).getLayoutParams();
+        headerDateLp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+        headerDateLp.weight = 0;
+"""
+          open(p,'w').write(t.replace(mark,add+mark))
+          PY
       - name: Build
         working-directory: launcher
         run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon --console=plain
