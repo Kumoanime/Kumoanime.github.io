@@ -61,6 +61,7 @@ jobs:
                   headerBlock.setPadding(headerX, headerY, headerX, headerY);
                   RelativeLayout.LayoutParams headerLp = (RelativeLayout.LayoutParams) headerBlock.getLayoutParams();
                   headerLp.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                  headerLp.removeRule(RelativeLayout.START_OF);
                   headerLp.leftMargin = -headerX;
                   headerLp.topMargin = -headerY;
                   headerLp.bottomMargin = -headerY;
