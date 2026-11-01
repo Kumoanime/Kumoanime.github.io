@@ -2,6 +2,7 @@ package app.kumo.tv
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -108,7 +109,8 @@ object Store {
             }
         }
         knownAddons = addons.map { it.url }.toSet()
-        goneAddons.addAll(sp.getStringSet("goneAddons", emptySet()).orEmpty())
+        goneAddons.addAll(sp.getStringSet("addonsGone", emptySet()).orEmpty())
+        sp.edit().remove("goneAddons").apply()
         accountEmail = sp.getString("email", null)
         aniListName = sp.getString("anilistName", null)
     }
@@ -119,8 +121,8 @@ object Store {
         version++
     }
 
-    // Add-ons removed on this TV, kept as hashes so an account's copy can't bring them back
-    // and the link itself isn't stored any longer than it has to be.
+    // Add-ons removed while signed in, as hashes, until the account's copy has been updated.
+    // One removed while signed out comes back at the next sign-in: the account still holds it.
     private var knownAddons = emptySet<String>()
     private val goneAddons = HashSet<String>()
     private fun addonHash(url: String) = MessageDigest.getInstance("SHA-256").digest(url.toByteArray())
@@ -128,12 +130,12 @@ object Store {
 
     private fun storeAddons() {
         val urls = addons.map { it.url }.toSet()
-        (knownAddons - urls).forEach { goneAddons.add(addonHash(it)) }
+        if (accountEmail != null) (knownAddons - urls).forEach { goneAddons.add(addonHash(it)) }
         urls.forEach { goneAddons.remove(addonHash(it)) }
         knownAddons = urls
         val a = JSONArray()
         addons.forEach { a.put(it.toJson()) }
-        sp.edit().putString("addons", a.toString()).putStringSet("goneAddons", HashSet(goneAddons)).apply()
+        sp.edit().putString("addons", a.toString()).putStringSet("addonsGone", HashSet(goneAddons)).apply()
         addonVersion++
     }
 
@@ -154,6 +156,7 @@ object Store {
             }
         }
         if (added) storeAddons()
+        Log.d("KumoSync", "account add-ons ${cloud?.optJSONArray("list")?.length() ?: -1}, on TV ${addons.size}, added $added")
     }
 
     // ---- bell ----
@@ -357,6 +360,11 @@ object Store {
         val row = JSONObject().put("user_id", user).put("watchlist", watchlist).put("progress", saved).put("updated_at", iso)
         val r = Net.post("$URL/rest/v1/user_data?on_conflict=user_id", JSONArray().put(row).toString(), auth + ("Prefer" to "resolution=merge-duplicates"))
         syncState = if (r.ok) "Synced" else "Couldn't sync. Check the connection."
+        Log.d("KumoSync", "saved ${list.length()} add-ons: ${r.ok}")
+        if (r.ok) withContext(Dispatchers.Main) {
+            goneAddons.clear()
+            sp.edit().putStringSet("addonsGone", emptySet()).apply()
+        }
     }
 
     private fun scheduleSync() {
