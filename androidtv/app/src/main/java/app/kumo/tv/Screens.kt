@@ -941,7 +941,8 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
                     if (count == 0) KText("No episodes have aired yet.", 14, Muted, modifier = Modifier.padding(top = 16.dp))
                     LazyColumn(Modifier.padding(top = 12.dp), state = episodes, contentPadding = PaddingValues(6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items((1..count).toList(), key = { it }) { n ->
-                            val pct = Store.percent(m.route, n)
+                            // Read here, or this row only redraws when something else changes it.
+                            val pct = remember(Store.version) { Store.percent(m.route, n) }
                             val seen = pct > 0.92f
                             val info = details[n]
                             Tile(Modifier.fillMaxWidth(), focusKey = "ep:$n", radius = 12.dp, grow = 1.01f, background = Surface, onClick = {
