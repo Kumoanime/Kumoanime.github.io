@@ -48,15 +48,19 @@ object Addons {
 
     private suspend fun streamsFrom(a: Addon, ids: ShowIds, ep: Int, movie: Boolean): List<Stream> {
         val spec = a.spec("stream") ?: return emptyList()
-        for (c in candidates(ids, ep, movie).filter { a.handles("stream", it.id) }.take(3)) {
-            val type = if (movie) "movie" else if (c.anime && "anime" in spec.first) "anime" else "series"
-            if (spec.first.isNotEmpty() && type !in spec.first) continue
-            val r = runCatching { Net.get(resourceUrl(a.url, "stream/${enc(type)}/${enc(c.id)}.json")) }.getOrNull() ?: continue
-            if (!r.ok) continue
-            val list = runCatching { JSONObject(r.body).optJSONArray("streams").objects().map(Stream::parse) }.getOrDefault(emptyList())
-            if (list.isNotEmpty()) return list
+        // Releases are often filed under only one of a show's ids, so ask with all of them.
+        val found = coroutineScope {
+            candidates(ids, ep, movie).filter { a.handles("stream", it.id) }.take(3).map { c ->
+                async {
+                    val type = if (movie) "movie" else if (c.anime && "anime" in spec.first) "anime" else "series"
+                    if (spec.first.isNotEmpty() && type !in spec.first) return@async emptyList()
+                    val r = runCatching { Net.get(resourceUrl(a.url, "stream/${enc(type)}/${enc(c.id)}.json")) }.getOrNull()
+                    if (r == null || !r.ok) return@async emptyList()
+                    runCatching { JSONObject(r.body).optJSONArray("streams").objects().map(Stream::parse) }.getOrDefault(emptyList())
+                }
+            }.flatMap { it.await() }
         }
-        return emptyList()
+        return found.distinctBy { it.filename?.lowercase() ?: it.url ?: it.title }
     }
 
     /** Subtitles from every subtitle add-on, English first. */
@@ -111,7 +115,7 @@ object StreamLogic {
     fun audio(s: Stream): Audio {
         val t = "${s.name ?: ""} ${s.title ?: ""} ${s.description ?: ""} ${s.filename ?: ""}"
         return when {
-            has("(?<![a-z])dub(bed|s)?(?![a-z])|(?<![a-z])dual(?![a-z])", t) -> Audio.DUB
+            has("(?<![a-z])dub(bed|s)?(?![a-z])|(?<![a-z])dual(?![a-z])|multi[- ]?audio|(?<![a-z])eng?(lish)? ?[+&/] ?(ja|jp|jpn|jap|japanese)(?![a-z])|(?<![a-z])(ja|jp|jpn|jap|japanese) ?[+&/] ?eng?(lish)?(?![a-z])|(?<![a-z])eng(lish)?[ ._-]?audio", t) -> Audio.DUB
             // Most anime releases never say "sub": they name a fansub group or Japanese audio.
             has("(?<![a-z])sub(bed|s|titles?)?(?![a-z])|soft ?sub|hard ?sub|multi[- ]?subs?|(?<![a-z])e?subs?please|[a-z]subs(?![a-z])|erai-?raws|(?<![a-z])(jpn|jap|japanese)(?![a-z])|\uD83C\uDDEF\uD83C\uDDF5", t) -> Audio.SUB
             else -> Audio.OTHER
