@@ -1,0 +1,41 @@
+name: Home screen build
+on:
+  push:
+    branches: [launcher-build]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Gathin23/cleanyourtv
+          ref: e62aa10a033f715a8ac7116efcf91e01b145adbd
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set the dock and hidden apps
+        run: |
+          python3 - <<'PY'
+          import re
+          p='launcher/app/src/main/res/values/config.xml'
+          t=open(p).read()
+          def arr(t,name,items):
+              body=''.join('        <item>%s</item>\n'%i for i in items)
+              t,n=re.subn(r'(<string-array name="%s">\n).*?(    </string-array>)'%name,lambda m:m.group(1)+body+m.group(2),t,count=1,flags=re.S)
+              assert n==1,name
+              return t
+          t=arr(t,'dock_apps',['com.nuvio.tv','app.kumo.tv','com.google.android.youtube.tv'])
+          t=arr(t,'hidden_apps',['com.mediatek.wwtv.tvcenter','com.mitv.gallery','uk.co.freeview.explore','uk.co.freeview.bbc','uk.co.freeview.ch5','uk.co.freeview.itv','uk.co.freeview.stv','uk.co.freeview.amc_horror','uk.co.freeview.ch4_vod'])
+          open(p,'w').write(t)
+          PY
+      - name: Build
+        working-directory: launcher
+        run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: home-screen
+          path: launcher/app/build/outputs/apk/release/app-release.apk
+          retention-days: 3
