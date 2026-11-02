@@ -93,6 +93,36 @@ jobs:
               t=t.replace(a,b)
           open(p,'w').write(t)
           PY
+      - name: Go back to Home when the TV sleeps
+        run: |
+          python3 - <<'PY'
+          p='launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java'
+          t=open(p).read()
+          recv = """    // Kumo TV: standby keeps the last app in front, so Home comes forward as the screen goes off and again as it
+              // comes on, and the TV always wakes on Home.
+              private final BroadcastReceiver sleepReceiver = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context context, Intent intent) {
+                      if (resumed) return;
+                      try {
+                          startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                                  .setClass(MainActivity.this, MainActivity.class)
+                                  .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED));
+                      } catch (RuntimeException ignored) {
+                      }
+                  }
+              };
+          """
+          for a,b in [
+              ('    private final BroadcastReceiver wakeReceiver = new BroadcastReceiver() {\n', recv+'    private final BroadcastReceiver wakeReceiver = new BroadcastReceiver() {\n'),
+              ('        if (openOnStartOnWake) {\n            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {\n',
+               '        IntentFilter sleepFilter = new IntentFilter(Intent.ACTION_SCREEN_OFF);\n        sleepFilter.addAction(Intent.ACTION_SCREEN_ON);\n        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {\n            registerReceiver(sleepReceiver, sleepFilter, Context.RECEIVER_NOT_EXPORTED);\n        } else {\n            registerReceiver(sleepReceiver, sleepFilter);\n        }\n        if (openOnStartOnWake) {\n            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {\n'),
+              ('        if (openOnStartOnWake) unregisterReceiver(wakeReceiver);\n','        if (openOnStartOnWake) unregisterReceiver(wakeReceiver);\n        unregisterReceiver(sleepReceiver);\n'),
+          ]:
+              assert t.count(a)==1,a
+              t=t.replace(a,b)
+          open(p,'w').write(t)
+          PY
       - name: Build
         working-directory: launcher
         run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon --console=plain
