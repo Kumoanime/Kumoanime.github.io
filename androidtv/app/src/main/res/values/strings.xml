@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="wake_home_description">Goes back to the home screen when the TV goes into standby, so it always wakes on Home. It doesn\'t read anything on screen.</string>
+</resources>
