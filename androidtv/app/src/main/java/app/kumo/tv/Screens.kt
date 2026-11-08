@@ -83,6 +83,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.key as pressedKey
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -1038,51 +1040,121 @@ private fun rememberSources(id: Int, ep: Int): EpisodeSources {
     return sources
 }
 
-/** Pick a type and the best source of it plays. */
+/** Pick a type, then a link of that type from the panel that opens beside it (or let Kumo pick the best). */
 @Composable
 private fun BoxScope.EpisodeDock(m: Media, ep: Int, onClose: () -> Unit) {
     val sources = rememberSources(m.id, ep)
     var chosen by remember { mutableStateOf<Audio?>(null) }
+    var open by remember { mutableStateOf<Audio?>(null) }
     val kinds = listOf(Audio.SUB to "Sub", Audio.DUB to "Dub", Audio.OTHER to "Other")
     val preferred = Store.kindFor(m.id) ?: Store.prefer
     val first = remember { FocusRequester() }
+    val kindFocus = remember { kinds.associate { it.first to FocusRequester() } }
+    val linksFirst = remember { FocusRequester() }
     LaunchedEffect(Unit) { withFrameNanos { }; runCatching { first.requestFocus() } }
+    LaunchedEffect(open) { if (open != null) { withFrameNanos { }; runCatching { linksFirst.requestFocus() } } }
+    fun start(kind: Audio, list: List<StreamRow>) {
+        if (list.isEmpty()) return
+        Store.setKind(m.id, kind)
+        Nav.lastFocus = if (m.isMovie) "show:play" else "ep:$ep"
+        sources.play(ep, list)
+    }
     LaunchedEffect(chosen) {
         val kind = chosen ?: return@LaunchedEffect
         sources.ready(kind)
         val list = sources.best(kind, ep)
         chosen = null
-        if (list.isEmpty()) return@LaunchedEffect
-        Store.setKind(m.id, kind)
-        Nav.lastFocus = if (m.isMovie) "show:play" else "ep:$ep"
-        sources.play(ep, list)
+        start(kind, list)
     }
-    BackHandler { if (chosen != null) chosen = null else onClose() }
+    fun closeLinks() { val k = open ?: return; open = null; runCatching { kindFocus[k]?.requestFocus() } }
+    BackHandler { when { chosen != null -> chosen = null; open != null -> closeLinks(); else -> onClose() } }
+    Row(
+        Modifier.align(Alignment.Center).then(arrowsStayInside()),
+        horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.Top,
+    ) {
+        Column(
+            Modifier.width(320.dp).background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            KText(if (m.isMovie) m.title else "Episode $ep", 16, bold = true, lines = 1, modifier = Modifier.padding(start = 8.dp, top = 2.dp))
+            KText(
+                when {
+                    Store.addons.none { it.enabled } -> "Add an add-on first, in Settings."
+                    sources.failed -> "Couldn't load this episode."
+                    sources.done && sources.rows.isEmpty() -> "No sources found."
+                    else -> chosen?.let { c -> "Starting ${kinds.first { it.first == c }.second}…" } ?: "Choose how to watch"
+                },
+                12, Muted, modifier = Modifier.padding(start = 8.dp, bottom = 4.dp),
+            )
+            kinds.forEach { (kind, name) ->
+                val count = sources.rows.count { it.audio == kind && !StreamLogic.isStatus(it.stream) }
+                val req = kindFocus.getValue(kind)
+                Tile(
+                    Modifier.fillMaxWidth().focusRequester(req).then(if (kind == preferred) Modifier.focusRequester(first) else Modifier),
+                    focusKey = "dock:$name", radius = 12.dp, grow = 1f,
+                    outline = false, background = if (open == kind) Raise else Surface, focusedBackground = Color.White,
+                    onClick = { if (count > 0 || !sources.done) open = kind },
+                ) { f ->
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                        KText(name, 15, if (f) Color.Black else Color.White, bold = true, modifier = Modifier.weight(1f))
+                        KText(
+                            if (count > 0) "$count link${if (count == 1) "" else "s"}  ›" else if (sources.done) "None found" else "Looking…",
+                            12, if (f) Color.DarkGray else Muted,
+                        )
+                    }
+                }
+            }
+        }
+        open?.let { kind -> LinksPanel(sources, kind, kinds.first { it.first == kind }.second, ep, linksFirst, onBack = { closeLinks() }, onAuto = { chosen = kind }, onPick = { start(kind, it) }) }
+    }
+}
+
+/** Every link of one type, best first. Picking one plays it, with the next-best links as fallbacks. */
+@Composable
+private fun LinksPanel(
+    sources: EpisodeSources, kind: Audio, name: String, ep: Int, first: FocusRequester,
+    onBack: () -> Unit, onAuto: () -> Unit, onPick: (List<StreamRow>) -> Unit,
+) {
+    val links = StreamLogic.order(sources.rows.filter { it.audio == kind && !StreamLogic.isStatus(it.stream) }, kind)
     Column(
-        Modifier.align(Alignment.Center).width(320.dp).then(arrowsStayInside())
-            .background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(12.dp),
+        Modifier.width(560.dp).heightIn(max = 470.dp).background(Color(0xF716161C), RoundedCornerShape(18.dp)).padding(12.dp)
+            .onPreviewKeyEvent { e ->
+                if (e.type == KeyEventType.KeyDown && e.pressedKey == Key.DirectionLeft) { onBack(); true } else false
+            },
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        KText(if (m.isMovie) m.title else "Episode $ep", 16, bold = true, lines = 1, modifier = Modifier.padding(start = 8.dp, top = 2.dp))
+        KText("$name links", 16, bold = true, lines = 1, modifier = Modifier.padding(start = 8.dp, top = 2.dp))
         KText(
-            when {
-                Store.addons.none { it.enabled } -> "Add an add-on first, in Settings."
-                sources.failed -> "Couldn't load this episode."
-                sources.done && sources.rows.isEmpty() -> "No sources found."
-                else -> chosen?.let { c -> "Starting ${kinds.first { it.first == c }.second}…" } ?: "Choose how to watch"
-            },
+            if (sources.done) "${links.size} found · ⚡ = ready to play instantly" else "${links.size} so far · still looking…",
             12, Muted, modifier = Modifier.padding(start = 8.dp, bottom = 4.dp),
         )
-        kinds.forEach { (kind, name) ->
-            val count = sources.rows.count { it.audio == kind }
-            Tile(
-                Modifier.fillMaxWidth(), focusKey = "dock:$name", requester = if (kind == preferred) first else null, radius = 12.dp, grow = 1f,
-                outline = false, background = Surface, focusedBackground = Color.White,
-                onClick = { if (count > 0 || !sources.done) chosen = kind },
-            ) { f ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                    KText(name, 15, if (f) Color.Black else Color.White, bold = true, modifier = Modifier.weight(1f))
-                    KText(if (count > 0) "Ready" else if (sources.done) "None found" else "Looking…", 12, if (f) Color.DarkGray else Muted)
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            item(key = "auto") {
+                Tile(
+                    Modifier.fillMaxWidth().focusRequester(first), focusKey = "links:auto", radius = 12.dp, grow = 1f,
+                    outline = false, background = Surface, focusedBackground = Color.White, onClick = onAuto,
+                ) { f ->
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        KText("Best link", 15, if (f) Color.Black else Orange, bold = true, lines = 1)
+                        KText("Kumo picks, and tries the next one if it fails", 12, if (f) Color.DarkGray else Muted, lines = 1)
+                    }
+                }
+            }
+            items(links, key = { it.index }) { row ->
+                val s = row.stream
+                val cached = StreamLogic.isCached(s)
+                Tile(
+                    Modifier.fillMaxWidth(), focusKey = "links:${row.index}", radius = 12.dp, grow = 1f,
+                    outline = false, background = Surface, focusedBackground = Color.White,
+                    onClick = { onPick(listOf(row) + sources.best(kind, ep).filter { it != row }) },
+                ) { f ->
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            KText((if (cached) "⚡ " else "") + s.label, 14, if (f) Color.Black else Color.White, bold = true, lines = 1, modifier = Modifier.weight(1f))
+                            KText(row.addon.name, 11, if (f) Color.DarkGray else Muted, lines = 1, modifier = Modifier.padding(start = 10.dp))
+                        }
+                        if (s.detail.isNotBlank()) KText(s.detail, 12, if (f) Color.DarkGray else Muted, lines = 2)
+                    }
                 }
             }
         }
