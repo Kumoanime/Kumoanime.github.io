@@ -141,18 +141,27 @@ object HomeData {
     var heroId by mutableIntStateOf(0)
     val more = HashMap<String, MoreList>()
 
-    private suspend fun row(key: String, title: String, load: suspend (Int) -> List<Media>) = rows.add(HomeRow(key, title, AniList.onePerShow(load(1)), load))
+    private suspend fun row(key: String, title: String, load: suspend (Int) -> List<Media>) {
+        val items = AniList.onePerShow(load(1))
+        if (rows.none { it.key == key }) rows.add(HomeRow(key, title, items, load))
+    }
+
+    private var loading = false
 
     suspend fun load() {
-        if (rows.isNotEmpty()) return
-        error = false
-        val (season, year) = AniList.currentSeason()
-        val pretty = season.lowercase().replaceFirstChar { it.uppercase() }
-        runCatching {
-            row("trending", "Trending now") { AniList.list("TRENDING_DESC", status = "RELEASING", page = it) }
-            row("season", "$pretty $year") { AniList.list("POPULARITY_DESC", season = season, year = year, page = it) }
-            row("top", "All-time favourites") { AniList.list("SCORE_DESC", status = "FINISHED", page = it) }
-        }.onFailure { if (rows.isEmpty()) error = true }
+        // Rows now take a moment (seasons are folded together), so a second call mustn't add them again.
+        if (rows.isNotEmpty() || loading) return
+        loading = true
+        try {
+            error = false
+            val (season, year) = AniList.currentSeason()
+            val pretty = season.lowercase().replaceFirstChar { it.uppercase() }
+            runCatching {
+                row("trending", "Trending now") { AniList.list("TRENDING_DESC", status = "RELEASING", page = it) }
+                row("season", "$pretty $year") { AniList.list("POPULARITY_DESC", season = season, year = year, page = it) }
+                row("top", "All-time favourites") { AniList.list("SCORE_DESC", status = "FINISHED", page = it) }
+            }.onFailure { if (rows.isEmpty()) error = true }
+        } finally { loading = false }
     }
 }
 

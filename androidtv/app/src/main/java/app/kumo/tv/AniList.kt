@@ -15,8 +15,15 @@ object AniList {
 
     suspend fun graph(query: String, vars: JSONObject, headers: Map<String, String> = emptyMap()): JSONObject {
         val body = JSONObject().put("query", query).put("variables", vars).toString()
-        val r = Net.post("https://graphql.anilist.co", body, headers)
-        if (!r.ok) throw Exception("AniList answered ${r.code}")
+        var r = Net.post("https://graphql.anilist.co", body, headers)
+        // AniList allows about 30 requests a minute; when it says slow down, wait for the next window.
+        for (wait in listOf(15_000L, 30_000L)) {
+            if (r.code != 429) break
+            android.util.Log.w("KumoAniList", "rate limited, waiting ${wait / 1000}s")
+            kotlinx.coroutines.delay(wait)
+            r = Net.post("https://graphql.anilist.co", body, headers)
+        }
+        if (!r.ok) { android.util.Log.w("KumoAniList", "answered ${r.code}"); throw Exception("AniList answered ${r.code}") }
         return JSONObject(r.body).optJSONObject("data") ?: throw Exception("AniList didn't answer")
     }
 
@@ -116,16 +123,26 @@ object AniList {
     /** The main TV run of a show, oldest first: itself plus every TV/ONA season along its prequel and sequel links. */
     suspend fun seasons(id: Int): List<Linked> {
         seasonCache[id]?.let { return it }
+        val q = "query(\$ids:[Int]){Page(perPage:50){media(id_in:\$ids,type:ANIME){id relations{edges{relationType(version:2) node{$FIELDS type isAdult startDate{year month}}}}}}}"
         val found = LinkedHashMap<Int, Linked>()
         val walked = hashSetOf(id)
         var queue = listOf(id)
+        // One request per step along the chain, for every show at that step at once.
         for (hop in 0 until 12) {
             val next = ArrayList<Int>()
-            for (show in queue) links(show).forEach { (l, type) ->
-                if (type != "SEQUEL" && type != "PREQUEL") return@forEach
-                if (l.media.format in SEASON_FORMATS && l.media.id !in found) found[l.media.id] = l
-                // Films and OVAs sit between seasons in the chain, so walk through them without listing them.
-                if (walked.add(l.media.id)) next.add(l.media.id)
+            graph(q, JSONObject().put("ids", JSONArray(queue))).optJSONObject("Page")?.optJSONArray("media").objects().forEach { m ->
+                m.optJSONObject("relations")?.optJSONArray("edges").objects().forEach edge@{ e ->
+                    val type = e.str("relationType")
+                    val node = e.optJSONObject("node") ?: return@edge
+                    if ((type != "SEQUEL" && type != "PREQUEL") || node.str("type") != "ANIME" || node.optBoolean("isAdult")) return@edge
+                    val media = Media.parse(node)
+                    if (media.id !in cache) cache[media.id] = media
+                    val start = node.optJSONObject("startDate")
+                    val date = (start?.optInt("year", 9999) ?: 9999) * 100 + (start?.optInt("month", 12) ?: 12)
+                    if (media.format in SEASON_FORMATS && media.id !in found) found[media.id] = Linked(media, null, date)
+                    // Films and OVAs sit between seasons in the chain, so walk through them without listing them.
+                    if (walked.add(media.id)) next.add(media.id)
+                }
             }
             if (next.isEmpty()) break
             queue = next
