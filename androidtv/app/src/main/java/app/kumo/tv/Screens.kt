@@ -957,8 +957,7 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
                     LazyRow(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 2.dp)) {
                         itemsIndexed(seasons, key = { _, s -> s.media.id }) { i, s ->
                             val here = s.media.id == m.id
-                            val year = s.media.seasonYear?.let { " · $it" } ?: ""
-                            KButton("Season ${i + 1}$year", focusKey = "season:${s.media.id}", solid = here) {
+                            KButton(seasonLabel(seasons.first().media.title, s.media.title, i), focusKey = "season:${s.media.id}", solid = here) {
                                 if (!here) { Nav.restore = "season:${s.media.id}"; Nav.replace(Route.Show(s.media.id)) }
                             }
                         }
@@ -1003,6 +1002,15 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
             }
         }
     }
+}
+
+/** "Season 3 Part 2" or "Swordsmith Village Arc" from the full title, else "Season N". */
+private fun seasonLabel(first: String, title: String, i: Int): String {
+    if (i == 0) return "Season 1"
+    val common = first.commonPrefixWith(title, ignoreCase = true).length
+    val rest = title.drop(common).trim(' ', ':', '-', '–', '·', ',').trim()
+    if (common < 4 || rest.none { it.isLetter() }) return "Season ${i + 1}"
+    return if (rest.length > 30) rest.take(29).trimEnd() + "…" else rest
 }
 
 private fun openTrailer(context: android.content.Context, id: String) {
