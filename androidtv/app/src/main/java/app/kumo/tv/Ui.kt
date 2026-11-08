@@ -177,7 +177,7 @@ fun KButton(label: String, modifier: Modifier = Modifier, focusKey: String? = nu
 
 class Hero(val title: String, val image: String?, val meta: String, val text: String?)
 
-class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onRemove: (() -> Unit)? = null, val titleAbove: Boolean = false)
+class PosterItem(val key: String, val id: Int, val title: String, val image: String?, val sub: String, val pct: Float? = null, val rating: String? = null, val ep: Int? = null, val hero: Hero? = null, val caption: Boolean = true, val onRemove: (() -> Unit)? = null, val titleOnPoster: Boolean = false)
 
 val PosterW = 118.dp
 val PosterH = 170.dp
@@ -189,7 +189,6 @@ fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
     Store.version  // Adds or removes the tick when Watching changes.
     val watching = Store.inWatchlist("#/a/${item.id}")
     Column(modifier.width(PosterW)) {
-        if (item.titleAbove) KText(item.title, 12, bold = true, lines = 1, modifier = Modifier.padding(bottom = 6.dp))
         Tile(
             Modifier.width(PosterW).height(PosterH),
             focusKey = item.key,
@@ -200,6 +199,11 @@ fun Poster(item: PosterItem, modifier: Modifier = Modifier) {
         ) {
             if (item.image != null) AsyncImage(item.image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else KText(item.title, 13, bold = true, modifier = Modifier.padding(8.dp))
+            if (item.titleOnPoster && item.image != null) Box(
+                Modifier.align(Alignment.BottomStart).fillMaxWidth()
+                    .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000))))
+                    .padding(start = 7.dp, end = 7.dp, top = 26.dp, bottom = 7.dp),
+            ) { KText(item.title, 12, bold = true, lines = 2) }
             item.pct?.let { Bar(it, Modifier.align(Alignment.BottomStart)) }
             if (watching) Box(
                 Modifier.align(Alignment.TopStart).padding(5.dp).size(19.dp).clip(RoundedCornerShape(10.dp)).background(Orange),
@@ -235,7 +239,7 @@ fun Centered(text: String) {
 
 fun Media.metaLine() = listOfNotNull(rating?.let { "★ $it" }, seasonYear?.toString(), format?.replace("_", " "), genres.take(3).joinToString(", ").ifEmpty { null }).joinToString("   ·   ")
 fun Media.hero() = Hero(title, banner ?: cover, metaLine(), synopsis)
-fun Media.poster(key: String, titleAbove: Boolean = false) = PosterItem(key, id, title, cover, "", rating = rating, hero = hero(), caption = false, titleAbove = titleAbove)
+fun Media.poster(key: String, titleOnPoster: Boolean = false) = PosterItem(key, id, title, cover, "", rating = rating, hero = hero(), caption = false, titleOnPoster = titleOnPoster)
 
 /** A native dialog: Android handles the remote and the on-screen keyboard for it. */
 fun askText(context: Context, title: String, initial: String = "", password: Boolean = false, onDone: (String) -> Unit) {
