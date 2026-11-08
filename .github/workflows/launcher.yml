@@ -125,9 +125,15 @@ jobs:
           PY
       - name: Build
         working-directory: launcher
-        run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon --console=plain
+        run: |
+          chmod +x gradlew
+          # services.gradle.org has been timing out; give the wrapper download longer and retry it.
+          sed -i 's/^networkTimeout=.*/networkTimeout=120000/' gradle/wrapper/gradle-wrapper.properties
+          grep -q '^networkTimeout=' gradle/wrapper/gradle-wrapper.properties || echo 'networkTimeout=120000' >> gradle/wrapper/gradle-wrapper.properties
+          for i in 1 2 3 4 5; do ./gradlew --version > /dev/null && break; echo "Gradle download failed, retry $i"; sleep 20; done
+          ./gradlew assembleRelease --no-daemon --console=plain
       - uses: actions/upload-artifact@v4
         with:
           name: home-screen
           path: launcher/app/build/outputs/apk/release/app-release.apk
-          retention-days: 3
+          retention-days: 30
