@@ -139,6 +139,63 @@ object AniList {
 
     private val SEASON_FORMATS = setOf("TV", "TV_SHORT", "ONA")
 
+    /** id -> (its prequel's id or 0, its own format). Saved, since seasons rarely change. */
+    private val prequels: HashMap<Int, Pair<Int, String?>> by lazy {
+        val map = HashMap<Int, Pair<Int, String?>>()
+        runCatching {
+            val o = JSONObject(Store.text("prequels") ?: "{}")
+            o.keys().forEach { k -> val a = o.getJSONArray(k); map[k.toInt()] = a.optInt(0) to a.optString(1).ifEmpty { null } }
+        }
+        map
+    }
+
+    private suspend fun learnPrequels(ids: Collection<Int>) {
+        val unknown = ids.filter { it !in prequels }.distinct()
+        if (unknown.isEmpty()) return
+        val q = "query(\$ids:[Int]){Page(perPage:50){media(id_in:\$ids,type:ANIME){id format relations{edges{relationType(version:2) node{id type format}}}}}}"
+        for (part in unknown.chunked(50)) {
+            val got = graph(q, JSONObject().put("ids", JSONArray(part))).optJSONObject("Page")?.optJSONArray("media").objects()
+            got.forEach { m ->
+                val pre = m.optJSONObject("relations")?.optJSONArray("edges").objects()
+                    .filter { it.str("relationType") == "PREQUEL" && it.optJSONObject("node")?.str("type") == "ANIME" }
+                    .mapNotNull { it.optJSONObject("node") }
+                // A TV prequel beats a film one when a season has both.
+                val p = pre.firstOrNull { it.str("format") in SEASON_FORMATS } ?: pre.firstOrNull()
+                prequels[m.optInt("id")] = (p?.optInt("id") ?: 0) to m.str("format")
+            }
+            part.forEach { prequels.putIfAbsent(it, 0 to null) }
+        }
+        val o = JSONObject()
+        prequels.forEach { (k, v) -> o.put(k.toString(), JSONArray().put(v.first).put(v.second ?: "")) }
+        Store.saveText("prequels", o.toString())
+    }
+
+    /** The first TV season of each show, found by walking prequels (through films and OVAs). */
+    private suspend fun firstSeasons(ids: List<Int>): Map<Int, Int> {
+        val at = ids.associateWith { it }.toMutableMap()
+        val first = ids.associateWith { it }.toMutableMap()
+        var active = ids.distinct()
+        for (hop in 0 until 15) {
+            learnPrequels(active.map { at.getValue(it) })
+            active = active.filter { id ->
+                val (pre, format) = prequels[at.getValue(id)] ?: return@filter false
+                if (format in SEASON_FORMATS) first[id] = at.getValue(id)
+                if (pre == 0 || pre == id) false else { at[id] = pre; true }
+            }
+            if (active.isEmpty()) break
+        }
+        return first
+    }
+
+    /** One poster per show: a later TV season is dropped when an earlier entry of the same show is already listed. Films stay. */
+    suspend fun onePerShow(list: List<Media>, already: List<Media> = emptyList()): List<Media> {
+        val all = already + list
+        val firsts = runCatching { firstSeasons(all.filter { it.format in SEASON_FORMATS }.map { it.id }) }.getOrNull() ?: return list
+        val seen = HashSet<Int>()
+        already.forEach { m -> if (m.format in SEASON_FORMATS) seen.add(firsts[m.id] ?: m.id) }
+        return list.filter { m -> m.format !in SEASON_FORMATS || seen.add(firsts[m.id] ?: m.id) }
+    }
+
     /** Genres for a list of shows, for the stats page. */
     suspend fun genres(ids: List<Int>): Map<Int, List<String>> {
         val q = "query(\$ids:[Int]){Page(perPage:50){media(id_in:\$ids,type:ANIME){id genres}}}"

@@ -98,6 +98,10 @@ object Store {
         get() = if (sp.getString("audio", "sub") == "dub") Audio.DUB else Audio.SUB
         set(v) { sp.edit().putString("audio", if (v == Audio.DUB) "dub" else "sub").apply(); version++ }
 
+    /** Plain saved text for other parts of the app (AniList's season links). */
+    fun text(key: String): String? = sp.getString(key, null)
+    fun saveText(key: String, value: String) { sp.edit().putString(key, value).apply() }
+
     fun init(context: Context) {
         sp = context.getSharedPreferences("kumo", Context.MODE_PRIVATE)
         progress = obj("progress")

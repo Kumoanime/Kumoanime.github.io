@@ -116,7 +116,7 @@ class MoreList(val row: HomeRow) {
         runCatching { row.load(page + 1) }.onSuccess { found ->
             page += 1
             val known = items.mapTo(HashSet()) { it.id }
-            items.addAll(found.filter { known.add(it.id) })
+            items.addAll(AniList.onePerShow(found.filter { known.add(it.id) }, items.toList()))
             if (found.size < 30) done = true
         }
         loading = false
@@ -141,7 +141,7 @@ object HomeData {
     var heroId by mutableIntStateOf(0)
     val more = HashMap<String, MoreList>()
 
-    private suspend fun row(key: String, title: String, load: suspend (Int) -> List<Media>) = rows.add(HomeRow(key, title, load(1), load))
+    private suspend fun row(key: String, title: String, load: suspend (Int) -> List<Media>) = rows.add(HomeRow(key, title, AniList.onePerShow(load(1)), load))
 
     suspend fun load() {
         if (rows.isNotEmpty()) return
@@ -552,10 +552,11 @@ object SearchData {
         busy = true
         failed = false
         val found = runCatching { AniList.search(vars()) }.getOrNull()
+        val shown = found?.first?.let { AniList.onePerShow(it) }.orEmpty()
         if (mine != run) return
         busy = false
         failed = found == null
-        results = found?.first.orEmpty()
+        results = shown
         more = found?.second ?: false
         searches++
     }
@@ -566,10 +567,12 @@ object SearchData {
         val mine = run
         page++
         val found = runCatching { AniList.search(vars()) }.getOrNull()
+        val known = results.mapTo(HashSet()) { it.id }
+        val added = found?.let { AniList.onePerShow(it.first.filter { m -> known.add(m.id) }, results) }
         fetching = false
         if (mine != run) return
-        if (found == null) { page--; return }
-        results = (results + found.first).distinctBy { it.id }
+        if (found == null || added == null) { page--; return }
+        results = results + added
         more = found.second
     }
 }
