@@ -491,6 +491,8 @@ private val Filters = run {
     val now = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
     listOf(
         Filter("genre", "Genre", listOf("Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller").map { it to it }),
+        // AniList tags: far more specific than its 19 genres, and they combine with a genre.
+        Filter("tag", "Theme", listOf("Samurai" to "Samurai", "Swordplay" to "Sword fighting", "Martial Arts" to "Martial arts / hand-to-hand", "Food" to "Cooking & food", "Anti-Hero" to "Anti-hero", "Assassins" to "Assassins", "Band" to "Bands", "Basketball" to "Basketball", "Battle Royale" to "Battle royale", "Body Swapping" to "Body swap", "Boxing" to "Boxing", "Card Battle" to "Card battles", "Crime" to "Crime", "Cyberpunk" to "Cyberpunk", "Death Game" to "Death games", "Delinquents" to "Delinquents & gangs", "Demons" to "Demons", "Detective" to "Detectives", "Dragons" to "Dragons", "E-Sports" to "E-sports", "Football" to "Football", "Found Family" to "Found family", "Ghost" to "Ghosts", "Kaiju" to "Giant monsters", "Gods" to "Gods", "Gore" to "Gore", "Guns" to "Gunfights", "Historical" to "Historical", "Idol" to "Idols", "Isekai" to "Isekai", "Josei" to "Josei", "Love Triangle" to "Love triangle", "Mafia" to "Mafia", "Magic" to "Magic", "Military" to "Military & war", "Mythology" to "Mythology", "Ninja" to "Ninja", "Parody" to "Parody", "Pirates" to "Pirates", "Post-Apocalyptic" to "Post-apocalyptic", "Reincarnation" to "Reincarnation", "Iyashikei" to "Relaxing (iyashikei)", "Revenge" to "Revenge", "Robots" to "Robots", "Royal Affairs" to "Royalty", "School" to "School", "Seinen" to "Seinen", "Shoujo" to "Shoujo", "Shounen" to "Shounen", "Space" to "Space", "Super Power" to "Super powers", "Survival" to "Survival", "Time Loop" to "Time loop", "Time Manipulation" to "Time travel", "Tragedy" to "Tragedy", "Vampire" to "Vampires", "Video Games" to "Video games", "Villainess" to "Villainess", "Witch" to "Witches", "Work" to "Work life", "Yakuza" to "Yakuza", "Youkai" to "Youkai & spirits", "Zombie" to "Zombies")),
         Filter("season", "Season", listOf("WINTER" to "Winter", "SPRING" to "Spring", "SUMMER" to "Summer", "FALL" to "Fall")),
         Filter("year", "Year", (now + 1 downTo 1970).map { "$it" to "$it" }),
         Filter("format", "Type", listOf("TV" to "TV", "MOVIE" to "Movie", "OVA" to "OVA", "ONA" to "ONA", "SPECIAL" to "Special", "TV_SHORT" to "TV short")),
@@ -524,6 +526,7 @@ object SearchData {
         val f = filters
         if (query.isNotEmpty()) v.put("search", query)
         f["genre"]?.let { v.put("genre", JSONArray().put(it)) }
+        f["tag"]?.let { v.put("tag", JSONArray().put(it)) }
         f["season"]?.let { v.put("season", it) }
         f["year"]?.let { v.put("year", it.toInt()) }
         f["format"]?.let { v.put("format", JSONArray().put(it)) }
