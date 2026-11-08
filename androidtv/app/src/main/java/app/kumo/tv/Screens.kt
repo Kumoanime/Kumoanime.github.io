@@ -914,6 +914,8 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
     LaunchedEffect(m.id) { if (!m.isMovie) details = AniList.episodes(m.id) }
     var filler by remember { mutableStateOf<Set<Int>>(emptySet()) }
     LaunchedEffect(m.id) { if (!m.isMovie) filler = Filler.episodes(m.idMal) }
+    var seasons by remember { mutableStateOf<List<AniList.Linked>>(emptyList()) }
+    LaunchedEffect(m.id) { seasons = runCatching { AniList.seasons(m.id) }.getOrDefault(emptyList()) }
     LaunchedEffect(m.id) {
         // From the bell or back from the player: return to that episode, however far down it is.
         val back = Nav.restore?.removePrefix("ep:")?.toIntOrNull()
@@ -949,6 +951,18 @@ fun ShowScreen(id: Int, ep: Int? = null, choose: Boolean = false) {
                     }
                     m.trailer?.let { trailer -> KButton("▶ Trailer", focusKey = "show:trailer") { openTrailer(context, trailer) } }
                     KButton("Related", focusKey = "show:related") { Nav.push(Route.Related(m.id)) }
+                }
+                if (seasons.size > 1) {
+                    // Every season of the show in one place. Switching replaces this page, so Back still leaves the show.
+                    LazyRow(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(horizontal = 2.dp)) {
+                        itemsIndexed(seasons, key = { _, s -> s.media.id }) { i, s ->
+                            val here = s.media.id == m.id
+                            val year = s.media.seasonYear?.let { " · $it" } ?: ""
+                            KButton("Season ${i + 1}$year", focusKey = "season:${s.media.id}", solid = here) {
+                                if (!here) { Nav.restore = "season:${s.media.id}"; Nav.replace(Route.Show(s.media.id)) }
+                            }
+                        }
+                    }
                 }
                 LastFailure.message?.let { KText(it, 13, Orange, modifier = Modifier.padding(top = 10.dp)) }
                 if (marking) KText("Press OK on an episode to mark it watched or unwatched.", 13, Orange, modifier = Modifier.padding(top = 10.dp))

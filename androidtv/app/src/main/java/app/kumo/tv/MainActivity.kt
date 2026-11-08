@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity() {
                     BackHandler(Nav.stack.size > 1) { Nav.pop() }
                     if (Splash.showApp) when (val r = Nav.stack.last()) {
                         Route.Tabs -> TabsScreen()
-                        is Route.Show -> ShowScreen(r.id, r.ep, r.choose)
+                        is Route.Show -> androidx.compose.runtime.key(r.id) { ShowScreen(r.id, r.ep, r.choose) }
                         is Route.Watch -> WatchScreen(r)
                         is Route.Player -> PlayerScreen(r.session)
                         Route.Addons -> AddonsScreen()

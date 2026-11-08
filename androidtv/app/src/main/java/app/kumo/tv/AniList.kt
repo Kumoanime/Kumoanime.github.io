@@ -111,6 +111,34 @@ object AniList {
         return found.values.sortedBy { it.date }
     }
 
+    private val seasonCache = HashMap<Int, List<Linked>>()
+
+    /** The main TV run of a show, oldest first: itself plus every TV/ONA season along its prequel and sequel links. */
+    suspend fun seasons(id: Int): List<Linked> {
+        seasonCache[id]?.let { return it }
+        val found = LinkedHashMap<Int, Linked>()
+        val walked = hashSetOf(id)
+        var queue = listOf(id)
+        for (hop in 0 until 12) {
+            val next = ArrayList<Int>()
+            for (show in queue) links(show).forEach { (l, type) ->
+                if (type != "SEQUEL" && type != "PREQUEL") return@forEach
+                if (l.media.format in SEASON_FORMATS && l.media.id !in found) found[l.media.id] = l
+                // Films and OVAs sit between seasons in the chain, so walk through them without listing them.
+                if (walked.add(l.media.id)) next.add(l.media.id)
+            }
+            if (next.isEmpty()) break
+            queue = next
+        }
+        val self = media(id)
+        if (self.format in SEASON_FORMATS || found.isNotEmpty()) found.putIfAbsent(id, Linked(self, null, (self.seasonYear ?: 9999) * 100 + 6))
+        val list = found.values.sortedBy { it.date }
+        list.forEach { seasonCache[it.media.id] = list }
+        return list
+    }
+
+    private val SEASON_FORMATS = setOf("TV", "TV_SHORT", "ONA")
+
     /** Genres for a list of shows, for the stats page. */
     suspend fun genres(ids: List<Int>): Map<Int, List<String>> {
         val q = "query(\$ids:[Int]){Page(perPage:50){media(id_in:\$ids,type:ANIME){id genres}}}"
